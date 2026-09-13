@@ -58,7 +58,7 @@ class CarPlayNamedLocationsController {
             item.handler = { [weak self] _, completion in
                 Task { @MainActor in
                     self?.navigateToLocation(location)
-                    self?.showNavigationStartedConfirmation(location.name)
+                    self?.unwindToMapAfterNavigationStart()
                 }
                 completion()
             }
@@ -103,24 +103,17 @@ class CarPlayNamedLocationsController {
         }
     }
 
-    // MARK: - Confirmation
+    // MARK: - Unwind
 
-    /// Show a brief confirmation alert that navigation has started.
-    private func showNavigationStartedConfirmation(_ name: String) {
-        // Pop to root first to keep the hierarchy shallow, then present
-        // the confirmation alert on the clean root map template.
-        interfaceController?.popToRootTemplate(animated: false) { [weak self] success, _ in
-            guard let self = self, success else { return }
-            let action = CPAlertAction(title: "OK", style: .default) { _ in }
-            let alert = CPAlertTemplate(
-                titleVariants: [
-                    "Navigating to \(name)",
-                    "Route calculated. Follow the map for turn-by-turn directions."
-                ],
-                actions: [action]
-            )
-            self.interfaceController?.presentTemplate(alert, animated: true, completion: nil)
-        }
+    /// Pops back to the map after navigation starts. Deliberately shows no
+    /// confirmation modal: the "Navigating to …" CPAlertTemplate was pure
+    /// interstitial noise with an unreliable OK button (TestFlight 2.3.0
+    /// b653). The trip preview and maneuver banner on the map are the
+    /// acknowledgment.
+    private func unwindToMapAfterNavigationStart() {
+        // Pop to root to keep the hierarchy shallow and return the driver
+        // to the live map template.
+        interfaceController?.popToRootTemplate(animated: false, completion: nil)
     }
 
     // MARK: - Empty State

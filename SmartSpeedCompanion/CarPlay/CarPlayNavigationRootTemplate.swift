@@ -743,20 +743,23 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
                     // CarPlay owns the add-stop flow. Do not present the
                     // phone's RouteStopsSheet here: it covers the phone HUD
                     // while CarPlay is searching and leaves the two surfaces
-                    // out of sync. The CarPlay confirmation returns directly
-                    // to the map template. Keep CarPlay's selection completion
+                    // out of sync. The flow pops back to the map template
+                    // after the add. Keep CarPlay's selection completion
                     // behind the async route mutation so the stack cannot race
-                    // the pop/alert transition.
+                    // the pop transition.
                     // Complete the CarPlay row selection promptly; MapKit may
                     // take an unbounded amount of time to calculate several
                     // sequential legs, and holding this callback would leave
                     // the list UI stuck. The single-flight latch serializes the
-                    // later pop/alert transition.
+                    // later pop transition.
                     completion()
                     let didAddStop = await self.viewModel.addStopToRoute(mapItem, presentRouteStopsSheet: false)
                     if didAddStop {
-                        self.showStopAddedConfirmation(name: name)
+                        self.unwindAfterStopAdded()
                     } else {
+                        // Only failures surface a modal; success speaks through
+                        // the recalculated route on the map (TestFlight 2.3.0
+                        // b653: "NEVER SHOW THIS SCREEN!!").
                         self.showStopAddFailure()
                     }
                 }
@@ -786,15 +789,16 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
         )
     }
 
-    /// Brief confirmation after a stop is added, then back to the map.
+    /// Unwinds the add-stop flow back to the map after a successful add.
+    /// Deliberately shows no confirmation modal: the old stop-added
+    /// confirmation alert was noise with an unreliable OK button
+    /// (TestFlight 2.3.0 b653). The recalculated route drawn on the map is
+    /// the acknowledgment. The invalidation plus latch reset still guard
+    /// against a late category-search callback re-pushing a stale result
+    /// list after the pop.
     @MainActor
-    private func showStopAddedConfirmation(name: String) {
-        // Invalidate any late category-search callback before unwinding the
-        // flow. This guarantees a completed add cannot be followed by a stale
-        // result list being pushed back onto the stack.
+    private func unwindAfterStopAdded() {
         invalidateAddStopSearch()
-        // Pop to root first to keep the hierarchy shallow, then present
-        // the confirmation alert on the clean root map template.
         guard let interfaceController else {
             isAddingStopInProgress = false
             return
@@ -806,12 +810,6 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
             self.activeAddStopTemplate = nil
             self.activeStopOptionsTemplate = nil
             self.activeStopsListTemplate = nil
-            let action = CPAlertAction(title: "OK", style: .default) { _ in }
-            let alert = CPAlertTemplate(
-                titleVariants: ["Stop added: \(name)", "Tap + again to add more stops."],
-                actions: [action]
-            )
-            self.interfaceController?.presentTemplate(alert, animated: true, completion: nil)
         }
     }
 

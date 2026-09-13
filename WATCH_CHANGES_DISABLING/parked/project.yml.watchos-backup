@@ -1,0 +1,376 @@
+name: SmartSpeedCompanion
+options:
+  bundleIdPrefix: com.speedsense
+  deploymentTarget:
+    iOS: "18.4"
+  # Pinned to Xcode 26.6 (latest stable on the macos-26 GitHub Actions runner
+  # as of 2026-07-16; released 2026-06-25 by Apple, build 17F113). Xcode 27.0
+  # is beta-only — not safe for production builds yet. The workflows also pin
+  # the runtime `xcode-select` to `/Applications/Xcode_26.6.app` with a
+  # graceful fallback to any Xcode_26.*.app, so if GitHub later adds a 26.7
+  # point release on the runner image, CI will use it without code edits here.
+  xcodeVersion: "26.6"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+packages:
+  Firebase:
+    url: https://github.com/firebase/firebase-ios-sdk.git
+    from: 12.0.0
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    DEVELOPMENT_TEAM: "VCNBBG32P6"
+    # ── APP VERSION (single source of truth) ───────────────────────────
+    # MARKETING_VERSION is the user-facing iOS app version
+    # (CFBundleShortVersionString). App Store Connect routes uploaded
+    # builds by this string: an .ipa whose CFBundleShortVersionString
+    # matches an existing App Store Connect Version row lands in that
+    # version's "Builds" tab automatically.
+    #
+    # IMPORTANT — App Store Connect version-monotonic floor:
+    # This bundle id (`com.speedsense.app`) has a hidden previously-
+    # approved record `2.1.4` in Apple's backend that doesn't surface
+    # in the ASC Versions UI list (which only shows `1.0` Ready +
+    # `1.1` Prepare for Submission). Apple's validator refuses ANY
+    # new build whose CFBundleShortVersionString is NOT strictly
+    # greater than 2.1.4, raising `40478` ("Invalid Version. The
+    # build with the version X can't be imported because a later
+    # version has been closed for new build submissions"). So values
+    # like `1.0`, `1.1`, `1.2`, `2.0`, `2.1.0`..`2.1.4`, `2.2.0` are now
+    # permanently invalid for this App ID. We bumped to 2.3.0 to clear
+    # that floor; every future shipped version must be `>= 2.3.0` for the
+    # same reason.
+    #
+    # To ship a new ASC release going forward:
+    #   1. Bump this value (e.g. "2.3.0" -> "2.3.1" -> "3.0.0"). The
+    #      pipeline auto-extracts it via a python3 regex inside
+    #      `distribute.yml`'s archive step and passes it on the
+    #      xcodebuild CLI as `MARKETING_VERSION=...`, so no workflow
+    #      edits are needed.
+    #   2. Push to `version2`. `distribute.yml` auto-uploads via
+    #      `xcrun altool --upload-app` and the build lands in the
+    #      matching ASC Version row's "Builds" tab.
+    #   3. In App Store Connect, either RENAME the existing "Prepare
+    #      for Submission" Version row to match, or create a new
+    #      Version row with the same label.
+    #
+    # CURRENT_PROJECT_VERSION (the build number) is auto-derived at
+    # archive time from `git rev-list --count HEAD` inside
+    # `distribute.yml` and overrides this static value on the CLI.
+    # Keep the literal below only as a local-dev fallback so previews
+    # in Xcode don't show "(null)".
+    MARKETING_VERSION: "2.4.0"
+    CURRENT_PROJECT_VERSION: "5"
+    ENABLE_BITCODE: NO
+    DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+
+targets:
+
+  # ── Main iPhone App ──────────────────────────────────────────────
+  SmartSpeedCompanion:
+    type: application
+    platform: iOS
+    deploymentTarget: "18.4"
+
+    sources:
+      - path: SmartSpeedCompanion/App
+      - path: SmartSpeedCompanion/CarPlay
+      - path: SmartSpeedCompanion/Core
+      - path: SmartSpeedCompanion/Extensions
+      - path: SmartSpeedCompanion/Models
+      - path: SmartSpeedCompanion/ViewModels
+      - path: SmartSpeedCompanion/Views
+      - path: SmartSpeedCompanion/Features/iOS26/CrashDetection
+      - path: SmartSpeedCompanion/Features/iOS26/Siri
+      - path: SmartSpeedCompanion/Features/iOS26/StandBy
+      # LiveActivities directory holds BOTH `LiveActivityManager` and
+      # `SpeedActivityAttributes` (compiled here so DriveViewModel can
+      # publish activities via ActivityKit) AND `SpeedLiveActivityView`
+      # (the `Widget` for Lock-Screen / Dynamic-Island rendering, which
+      # lives in the widget extension target below — Swift rejects two
+      # `@main` declarations per module so the rendering file is
+      # explicitly excluded from this target's sources).
+      - path: SmartSpeedCompanion/Features/iOS26/LiveActivities
+        excludes:
+          - "**/SpeedLiveActivityView.swift"
+      - path: SmartSpeedCompanion/Resources/Assets.xcassets
+      # Camera tuning lookup tables bundled into the app. Loaded by
+      # `CameraTuning.loadTuning()` in `SmartSpeedCompanion/Core/CameraSystem.swift`; falls
+      # back to compile-time constants in CameraDecisionEngine if the resource is missing.
+      - path: SmartSpeedCompanion/Resources/CameraTuning.json
+        buildPhase: resources
+      # Silent notification sound used by `BackgroundHapticBridge` so the
+      # background-vibration fallback buzzes (system notification
+      # vibration) without playing any audio — preserving the user's
+      # "audio alerts off" choice.
+      - path: SmartSpeedCompanion/Resources/silent_alert.wav
+        buildPhase: resources
+      # Preserve the Arizona SQLite implementation/data in the repository for a
+      # future all-states replacement, but do not bundle it in the production app.
+      # No active code path calls ArizonaSpeedLimitService today.
+      # - path: SmartSpeedCompanion/Resources/ArizonaSpeedLimits.sqlite
+      #   buildPhase: resources
+      - path: SmartSpeedCompanion/Configuration/GoogleService-Info.plist
+        buildPhase: resources
+      - path: SmartSpeedCompanion/Configuration/HERE-Config.plist
+        buildPhase: resources
+        optional: true
+
+    # NOTE: The WidgetKit bundle (`SpeedWidget.swift` +
+    # `SpeedLiveActivityView.swift`) lives in its own
+    # `SmartSpeedCompanionWidget` extension target below. Including it
+    # in the main app target would compile two `@main` declarations in
+    # the same module, which Swift rejects.
+
+    resources:
+      - path: SmartSpeedCompanion/Resources/Assets.xcassets
+
+    entitlements:
+      path: SmartSpeedCompanion/Resources/Entitlements/SmartSpeedCompanion.entitlements
+
+    info:
+      path: SmartSpeedCompanion/Configuration/Info.plist
+      properties:
+        # CFBundleVersion and CFBundleShortVersionString MUST be declared here (with the
+        # Xcode build-setting variable references below) — XcodeGen regenerates Info.plist
+        # from this block at generate time and a literal CFBundleVersion key was missing,
+        # causing App Store Connect ingestion to fall back to version "1" and produce a 409
+        # duplicate error after every bump to CURRENT_PROJECT_VERSION. With these explicit
+        # entries, Xcode substitutes $(CURRENT_PROJECT_VERSION) / $(MARKETING_VERSION) into
+        # the final Info.plist at archive time and altool sees the actual build number.
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleName: Speedio
+        CFBundleDisplayName: Speedio
+        CFBundleIdentifier: com.speedsense.app
+        # ITSAppUsesNonExemptEncryption: false declares that the app uses only standard,
+        # exempt encryption via Apple's OS-provided stack (TLS in URLSession, HTTPS in the
+        # Firebase SDK, HTTPS in our ArcGIS / Overpass providers, etc.). With this key
+        # present in the generated Info.plist, App Store Connect skips the post-upload
+        # export-compliance form on every future upload. Apple's spec:
+        # https://developer.apple.com/documentation/bundleresources/information-property-list/itsappusesnonexemptencryption
+        ITSAppUsesNonExemptEncryption: false
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+          UISceneConfigurations:
+            # Plan A: CarPlaySceneDelegate uses the full map + navigation
+            # experience (CPMapTemplate). The provisioning profile now
+            # authorizes com.apple.developer.carplay-maps (CarPlay Navigation
+            # App approved 2026-07-30).
+            CPTemplateApplicationSceneSessionRoleApplication:
+              - UISceneConfigurationName: CarPlay Configuration
+                UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).CarPlaySceneDelegate
+            CPTemplateApplicationDashboardSceneSessionRoleApplication:
+              - UISceneConfigurationName: CarPlay Configuration
+                UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).CarPlaySceneDelegate
+        # `audio` is required in UIBackgroundModes so the app can play speed-
+        # limit alert tones while the phone is locked or the user is in another
+        # app. Without this entitlement the system suspends audio playback
+        # shortly after the app backgrounds, leaving users without audible
+        # overspeed warnings — even though GPS location updates continue to
+        # wake the app briefly. Apple Guideline 2.5.4 addresses continuous
+        # streaming-audio apps; transient alert tones for a driving-safety app
+        # are a legitimate exception (similar to navigation alert tones).
+        UIBackgroundModes:
+          - audio
+          - location
+          - fetch
+          - remote-notification
+        NSLocationAlwaysAndWhenInUseUsageDescription: "Speed Sense needs your location to monitor your speed in real time."
+        NSLocationWhenInUseUsageDescription: "Speed Sense needs your location to monitor your speed."
+        NSMotionUsageDescription: "Used to detect sudden deceleration for crash detection."
+        NSSiriUsageDescription: "Use Siri to start and stop your drive sessions."
+        # CPSupportedTemplates must mirror what the CarPlay folder actually
+        # instantiates at runtime; ACS validates the declared set.
+        # Plan A (CarPlaySceneDelegate) — the approved navigation experience.
+        # CPMapTemplate is the root; CPSearchTemplate + CPNavigationAlert are
+        # used for destination search and overspeed alerts. List/Alert/
+        # Information templates are still used by the settings, profile,
+        # saved-places, and route-stop sub-flows.
+        # CPNowPlayingTemplate: required by the CarPlay Audio App category
+        # (com.apple.developer.carplay-audio — granted 2026-08-02).
+        # CarPlayNowPlayingController pushes it from the map root.
+        CPSupportedTemplates:
+          - CPMapTemplate
+          - CPSearchTemplate
+          - CPNavigationAlert
+          - CPListTemplate
+          - CPAlertTemplate
+          - CPInformationTemplate
+          - CPGridTemplate
+          - CPNowPlayingTemplate
+        NSSupportsLiveActivities: true
+        UIRequiredDeviceCapabilities:
+          - location-services
+          - gps
+        # NOTE: XcodeGen regenerates Info.plist from this block at build time, so orientation keys
+        # must be declared here. Source SmartSpeedCompanion/Configuration/Info.plist is overridden
+        # by the generated copy; altool's "Invalid bundle. No orientations were specified" 409
+        # validation surfaces when these are missing.
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        # UISupportedInterfaceOrientations~ipad intentionally omitted — the app is iPhone-only
+        # (TARGETED_DEVICE_FAMILY=1 in settings.base). Including this key would be a no-op
+        # but removing it prevents App Store Connect ingestion from flagging a
+        # "iPad orientation present in iPhone-only binary" warning.
+
+    settings:
+      base:
+        # Pin MARKETING_VERSION + CURRENT_PROJECT_VERSION at the TARGET
+        # level too -- belt + suspenders with the same values at
+        # settings.base above. The TestFlight 2.1.4 high-volume / 1.1
+        # rollout hit a case where the IPA CFBundleShortVersionString
+        # baked out as 2.1.4 despite settings.base declaring MARKETING_VERSION
+        # = "1.1"; one possible cause is a stale Xcode-scheme override of
+        # MARKETING_VERSION pinned by an older `xcodegen generate` run.
+        # Declaring the values here forces xcodebuild to read them from
+        # this explicit scope every archive, regardless of any cached
+        # project-level default. $(MARKETING_VERSION) / $(CURRENT_PROJECT_VERSION)
+        # in this target's `info.properties` block above still drive the
+        # baked Info.plist values.
+        MARKETING_VERSION: "2.4.0"
+        # CURRENT_PROJECT_VERSION is auto-derived at archive time in
+        # distribute.yml from `git rev-list --count HEAD` -- the literal
+        # "4" below only affects Xcode local-dev previews. Keep it > last
+        # uploaded build number to avoid ASC duplicate detection.
+        CURRENT_PROJECT_VERSION: "5"
+        PRODUCT_BUNDLE_IDENTIFIER: com.speedsense.app
+        INFOPLIST_FILE: SmartSpeedCompanion/Configuration/Info.plist
+        CODE_SIGN_ENTITLEMENTS: SmartSpeedCompanion/Resources/Entitlements/SmartSpeedCompanion.entitlements
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "Apple Distribution"
+        PROVISIONING_PROFILE_SPECIFIER: "Speedio App Store"
+        # TARGETED_DEVICE_FAMILY=1 declares the binary as iPhone-only. This app is a
+        # CarPlay + Live Activities driving app — iPads do not run CarPlay and there is
+        # no iPad UI. With UIDeviceFamily=[1] the App Store Connect submission form
+        # stops requiring 12.9" iPad Pro screenshots and Apple only lists the build as
+        # installable on iPhone in the App Store. (1,2) is the Xcode default and was
+        # silently making ASC treat Speedio as a universal iOS app.
+        TARGETED_DEVICE_FAMILY: "1"
+
+    dependencies:
+      - package: Firebase
+        product: FirebaseCore
+      - package: Firebase
+        product: FirebaseAuth
+      - package: Firebase
+        product: FirebaseFirestore
+      - package: Firebase
+        product: FirebaseAnalytics
+      # Embed the WidgetKit extension inside the main app bundle so iOS
+      # renders the home-screen / lock-screen widgets from the same .ipa.
+      # Without this dependency the extension target never lands in the
+      # main app's PlugIns folder on build and the .ipa reaches TestFlight
+      # without a widget bundle.
+      - target: SmartSpeedCompanionWidget
+
+  # ── WidgetKit Extension Target ─────────────────────────────────────
+  # Lives as a sibling of the main app target. Renders:
+  #   - Home-screen widget:     `SpeedWidget`              (small / rectangular)
+  #   - Lock-screen Live Activity: `SpeedLiveActivityView` (Dynamic Island + LS card)
+  # Shares App Group `group.com.smartspeedcompanion.app` with the main
+  # app so the widget timeline can read speed / limit / status / units
+  # written from `DriveViewModel.writeWidgetSnapshot()` and Settings.
+  # MANUAL SETUP: enable the App Group on App ID `com.speedsense.app`
+  # AND on the extension App ID `com.speedsense.app.SpeedWidget` at
+  # developer.apple.com, then re-download the `Speedio App Store`
+  # provisioning profile so the App Group entitlement embeds.
+  SmartSpeedCompanionWidget:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "18.4"
+
+    # Source list is intentionally surgical — we list ONLY the files the
+    # widget compiles. Including `Core/` wholesale would pull in Firebase-
+    # using files (e.g. AppleMapsServerClient) and break the extension
+    # because the widget doesn't link Firebase. We compile
+    # SpeedStatus + DesignSystem + GlassView + Color+Theme explicitly
+    # because DesignSystem references SpeedStatus, and GlassView +
+    # Color+Theme are needed by our styling helpers.
+    #   - SpeedWidget.swift            → @main WidgetBundle (entry point)
+    #   - SpeedLiveActivityView.swift  → ActivityConfiguration for the LS card
+    #   - SpeedActivityAttributes.swift → ContentState Codable used by both
+    #   - SpeedFormatting.swift        → mph↔kmh helpers (also writes App Group mirror)
+    sources:
+      - path: SmartSpeedCompanion/Core/SpeedFormatting.swift
+      - path: SmartSpeedCompanion/Models/SpeedStatus.swift
+      - path: SmartSpeedCompanion/Extensions/Color+Theme.swift
+      - path: SmartSpeedCompanion/Views/Shared/DesignSystem.swift
+      - path: SmartSpeedCompanion/Views/Shared/GlassView.swift
+      - path: SmartSpeedCompanion/Features/iOS26/Widgets/SpeedWidget.swift
+      - path: SmartSpeedCompanion/Features/iOS26/LiveActivities/SpeedActivityAttributes.swift
+      - path: SmartSpeedCompanion/Features/iOS26/LiveActivities/SpeedLiveActivityView.swift
+
+    entitlements:
+      path: SmartSpeedCompanion/Resources/Entitlements/SmartSpeedCompanionWidget.entitlements
+
+    info:
+      path: SmartSpeedCompanion/Configuration/SmartSpeedCompanionWidget-Info.plist
+      properties:
+        # CFBundleVersion / ShortVersionString mirror the main app so
+        # App Store Connect reports consistent marketing / build numbers.
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleExecutable: $(EXECUTABLE_NAME)
+        CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
+        CFBundleName: $(PRODUCT_NAME)
+        CFBundleDisplayName: Speedio Widget
+        # `XPC!` (4 chars) is the canonical package type for
+        # `*.appex` bundles; App Store Connect's validator rejects
+        # `APPL` or an empty type.
+        CFBundlePackageType: XPC!
+        NSSupportsLiveActivities: true
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+
+    settings:
+      base:
+        # Belt + suspenders with the same MARKETING_VERSION=1.1 / build
+        # number at the project-level settings.base. See the comment
+        # block on the SmartSpeedCompanion target's settings.base for why
+        # duplicating these here matters when an older `xcodegen generate`
+        # version may have cached a stale scheme-level override.
+        MARKETING_VERSION: "2.4.0"
+        CURRENT_PROJECT_VERSION: "5"
+        # Bundle id is the host-app's id with a `.SpeedWidget` suffix —
+        # iOS only embeds an extension into its parent app when the
+        # extension's bundle id is rooted at the parent's prefix.
+        PRODUCT_BUNDLE_IDENTIFIER: com.speedsense.app.SpeedWidget
+        INFOPLIST_FILE: SmartSpeedCompanion/Configuration/SmartSpeedCompanionWidget-Info.plist
+        CODE_SIGN_ENTITLEMENTS: SmartSpeedCompanion/Resources/Entitlements/SmartSpeedCompanionWidget.entitlements
+        # `../../Frameworks` is required so the extension can link the
+        # main app's installed Firebase frameworks from its own
+        # PlugIns lifestyle (WidgetKit extension binary lives at
+        # `App.app/PlugIns/Widget.appex/Widget`, two directories deep
+        # from `Frameworks/`).
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "Apple Distribution"
+        # Provisioning profile shared with the main app so App Store
+        # Connect's validator signs the .appex with the same team +
+        # capability set. A dedicated `SpeedWidget App Store` profile
+        # is recommended but not required for the first ship.
+        PROVISIONING_PROFILE_SPECIFIER: "Speedio App Store"
+        TARGETED_DEVICE_FAMILY: "1"
+        # `SKIP_INSTALL = true` is the canonical setting for
+        # application extensions — App Store Connect's package
+        # validator otherwise tries to install the .appex as a
+        # standalone app and rejects the submission.
+        SKIP_INSTALL: true
+
+schemes:
+  SmartSpeedCompanion:
+    build:
+      targets:
+        SmartSpeedCompanion: all
+        SmartSpeedCompanionWidget: all
+    run:
+      config: Debug
+    archive:
+      config: Release

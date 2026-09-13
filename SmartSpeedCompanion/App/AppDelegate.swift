@@ -39,6 +39,13 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     ) -> Bool {
         configureFirebase()
         prewarmFrameworks()
+        // [WATCH-DISABLED] Apple Watch integration paused while iOS fixes
+        // land. The WCSession bridge below is commented out and its source
+        // files (Core/WatchLink.swift, Core/WatchSessionController.swift)
+        // are parked in WATCH_CHANGES_DISABLING/. To restore, see
+        // WATCH_CHANGES_DISABLING/README-RESTORING.md.
+        // WatchSessionController.shared.activate()
+        // WatchSessionController.shared.observe(viewModel: Self.sharedDriveViewModel)
         return true
     }
 

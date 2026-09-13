@@ -3,6 +3,21 @@ import ActivityKit
 import Foundation
 
 public struct SpeedActivityAttributes: ActivityAttributes {
+    // [WATCH-DISABLED] Apple Watch Smart Stack support paused while iOS
+    // fixes land — commented out (restore per WATCH_CHANGES_DISABLING docs).
+    // /// [WATCH-SMART-STACK] Declares support for the watchOS 11 Smart Stack
+    // /// "small" activity family so the system offers a wrist-sized rendering
+    // /// of this Live Activity on a paired Apple Watch. Pairs with the
+    // /// `.supplementalActivityFamilies([.small])` modifier on
+    // /// `SpeedLiveActivityView` (WidgetKit silently drops a family that the
+    // /// attributes struct does not also declare).
+    // public static var supplementalActivityFamilies: [ActivityFamily] {
+    //     if #available(watchOS 11.0, iOS 18.0, *) {
+    //         return [.small]
+    //     }
+    //     return []
+    // }
+
     public struct ContentState: Codable, Hashable {
         public var speed: Double
         public var speedLimit: Int

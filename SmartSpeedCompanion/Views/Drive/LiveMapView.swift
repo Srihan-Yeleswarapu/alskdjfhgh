@@ -272,16 +272,35 @@ public struct LiveMapView: UIViewRepresentable {
         // offset when navigation ends. The tracking button follows
         // automatically via its `compass.bottom + 8` constraint.
         if let compassTop = context.coordinator.compassTopConstraint {
-            // 2+ stops render the extra in-card Optimize row (~35 pt), and
-            // the offline banner (+~40 pt) pushes the whole card stack down
-            // — the drop distance grows with both so the pair always lands
-            // below the stack. Values are conservative by design.
-            let guidanceOffset: CGFloat = 155
-                + (viewModel.routeStops.count >= 2 ? 35 : 0)
-                + (network.isConnected ? 0 : 40)
+            // TestFlight 2.3.0 b653 (chslmadhuri@gmail.com): "Move the
+            // directions panel thing more up, so that these circles buttons
+            // are not covered." The b640 fix dropped the pair by a hardcoded
+            // estimate (155 + 35 for 2+ stops + 40 offline) that went stale
+            // whenever the card stack gained or lost a row (ETA line, stops
+            // badge, Add Stops pill, nearby-amenities card…), letting the
+            // compass end up half-tucked under the chrome again. MapWithHUD
+            // View now MEASURES the top chrome's real bottom edge every
+            // layout pass (`TopChromeBottomKey`) and publishes it on the view
+            // model; we sit 14 pt below it. Falls back to the legacy estimate
+            // only until the first SwiftUI layout pass (topChromeBottom == 0).
+            let measured = viewModel.topChromeBottom
+            // `measured` is in global (window) space; the constraint pins the
+            // compass to the map's safe-area top, so subtract the map's own
+            // safe-area inset to convert. Never float ABOVE the search-row
+            // rest position.
+            let guidanceOffset = measured > 0
+                ? max(measured - uiView.safeAreaInsets.top, 72)
+                : 155
+                    + (viewModel.routeStops.count >= 2 ? 35 : 0)
+                    + (network.isConnected ? 0 : 40)
             let target: CGFloat = viewModel.isNavigating ? guidanceOffset : 72
             if abs(compassTop.constant - target) > 0.5 {
                 compassTop.constant = target
+                // Re-layout immediately — waiting for the next SwiftUI-driven
+                // pass left the first navigation frame with the pair still
+                // pinned at its old offset, exactly the overlap the tester
+                // screenshotted.
+                uiView.layoutIfNeeded()
             }
         }
 

@@ -1,0 +1,22 @@
+Speedio is your precision driving dashboard for iPhone and CarPlay — built to keep you aware of your speed, the posted limit, and what’s ahead on the road.
+
+WHAT YOU GET
+
+• Real-time speed display powered by high-accuracy GPS
+• Live posted speed limits from multiple map sources, including cached limit data so the app can keep working when your connection is spotty
+• Smart overspeed alerts — choose audio, haptic, or both, and set a personal buffer so alerts fire when you actually want them to
+• Custom haptics: pick from built-in vibration styles or record your own pattern
+• Background alerts: if you’re over the limit while the app is in the background, Speedio can buzz you through a silent notification
+• Crash/sudden-stop detection on supported devices, with an instant alert when it matters
+• Driving analytics: review each session with a driving score, time-in-limit breakdown, overspeed heat map, and session stats
+• Siri and Apple Intelligence: start and end drives, check your speed and limit, ask for your ETA, next-turn distance, distance to destination, and your latest or today’s drive summary — hands-free
+• Live Activities and Home Screen widgets so your current speed and limit are visible at a glance
+• CarPlay support for driving navigation and alerts
+• StandBy mode display when your iPhone is resting on a charger or dock
+• Map styles, unit choices (mph / km/h), GPS accuracy modes, voice navigation, and route settings
+• Offline speed-limit downloads for supported areas
+• Privacy-focused design: location and motion data are used for real-time driving features
+
+Speedio is optimized for Arizona roads with AZ511 camera data and DOT-sourced limit information, and it keeps working wherever GPS and map data are available.
+
+Drive smarter. Stay aware. Master the road.

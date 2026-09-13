@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      [WATCH] Watch app entitlements.
+
+      KEYCHAIN: the watch-side credential stores (HERECredentialStore,
+      GeoapifyCredentialStore) read the same service/account namespaces as
+      the phone. Keychain items do NOT sync iPhone↔watch — the watch keeps
+      its own local credential copies (user-entered or bundled plist).
+
+      APP GROUP: `group.com.smartspeedcompanion.app.watch` is a WATCH-LOCAL
+      group (watch app ↔ watch complications). App Groups do NOT span
+      iPhone↔watch; phone↔watch sync travels over WCSession (WatchLink).
+      MANUAL SETUP: create this App Group at developer.apple.com AND enable
+      it on App ID `com.speedsense.app.watchkitapp`, then generate the
+      `Speedio Watch App Store` provisioning profile (see WATCH_SETUP.md).
+    -->
+    <key>keychain-access-groups</key>
+    <array>
+        <string>$(AppIdentifierPrefix)com.speedsense.app</string>
+    </array>
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>group.com.smartspeedcompanion.app.watch</string>
+    </array>
+</dict>
+</plist>

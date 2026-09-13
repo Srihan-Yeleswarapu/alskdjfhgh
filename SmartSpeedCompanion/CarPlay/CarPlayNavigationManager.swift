@@ -135,7 +135,10 @@ public class CarPlayNavigationManager: NSObject, NavigationActionDelegate {
 
         let search = MKLocalSearch(request: request)
         search.start { response, _ in
-            completion(Array(response?.mapItems.prefix(10) ?? []))
+            // Rank POIs above plain addresses so the CarPlay rows lead with
+            // the same places the phone's Apple Maps shows for the query
+            // (TestFlight 2.3.0 b653).
+            completion(Array(Self.poiFirst(Array(response?.mapItems ?? [])).prefix(10)))
         }
     }
     
@@ -188,13 +191,44 @@ public class CarPlayNavigationManager: NSObject, NavigationActionDelegate {
         do {
             let search = MKLocalSearch(request: request)
             let response = try await search.start()
-            return Array(response.mapItems.prefix(5))
+            // POI-first ranking — see poiFirst(_:).
+            return Array(Self.poiFirst(response.mapItems).prefix(5))
         } catch {
             print("Search error: \(error)")
             return []
         }
     }
     
+    // MARK: - Search result ranking
+
+    /// Ranks points of interest above plain addresses, mirroring the phone's
+    /// Apple Maps app. Raw MKLocalSearch puts an exact street-address match
+    /// (often the very road the car is parked on) at the top of the response,
+    /// so the CarPlay keyboard rows filled with "S Tumbleweed Ln" while the
+    /// phone showed Tumbleweed Park, the Recreation Center, and the Pickleball
+    /// Courts for the same query (TestFlight 2.3.0 b653). The POIs are already
+    /// in the same response — this only re-orders, with no extra request and
+    /// no dropped results. The sort is stable: ties keep MapKit's relevance
+    /// order.
+    ///
+    /// 0 = POI, 1 = other, 2 = plain address (name is the formatted address).
+    nonisolated private static func poiFirstOrderingKey(_ item: MKMapItem) -> Int {
+        if item.pointOfInterestCategory != nil { return 0 }
+        let isAddress = item.name != nil && item.name == item.placemark.title
+        return isAddress ? 2 : 1
+    }
+
+    /// Stable-sorts map items so POIs lead and plain formatted addresses trail.
+    nonisolated static func poiFirst(_ items: [MKMapItem]) -> [MKMapItem] {
+        items.enumerated()
+            .sorted { lhs, rhs in
+                let l = poiFirstOrderingKey(lhs.element)
+                let r = poiFirstOrderingKey(rhs.element)
+                return l == r ? lhs.offset < rhs.offset : l < r
+            }
+            .map { $0.element }
+    }
+
     // MARK: - Route Calculation
 
     /// Calculates up to three alternate routes (fastest first) for the

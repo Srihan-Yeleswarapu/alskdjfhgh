@@ -173,6 +173,15 @@ public final class DriveViewModel: NSObject, ObservableObject {
     @Published public var isSearchingLocally: Bool = false
     /// History of recent search query strings.
     @Published public var recentSearches: [String] = []
+    /// Bottom edge (global points) of the top chrome overlay — everything
+    /// drawn above the middle Spacer of the map screen (offline banner,
+    /// navigation card, Add Stops pill, nearby-amenities card, search bar).
+    /// Measured live in `MapWithHUDView` via `TopChromeBottomKey` and read by
+    /// `LiveMapView.updateUIView` to place the native compass + tracking
+    /// buttons just below the real chrome instead of a hardcoded estimate.
+    /// Zero until the first layout pass (LiveMapView then falls back to the
+    /// legacy estimate).
+    @Published public var topChromeBottom: CGFloat = 0
     
     // MARK: - Route Selection State    /// Indicates if we are showing the alternate route selection screen.
     @Published public var isSelectingRoute: Bool = false
@@ -1587,7 +1596,16 @@ public final class DriveViewModel: NSObject, ObservableObject {
         if query.isEmpty {
             searchCompletions = []
             searchResults = []
-            isSearchingLocally = false
+            // TestFlight 2.3.0 (b643) feedback (srihan.yeleswarapu@gmail.com):
+            // "I typed something into the search bar, but then backspaced all
+            // of it, when I did that, then the speed, start button, and speed
+            // limit button all came up. Don't do that." Emptying the field
+            // used to exit search mode entirely, which snapped the bottom HUD
+            // (speed readout, START pill, limit sign) back over the map while
+            // the keyboard was still up. Stay in search mode instead — the
+            // interaction only genuinely ends when the caller that owns it
+            // dismisses (X button, destination selection), and those paths
+            // clear `isSearchingLocally` themselves.
             return
         }
         isSearchingLocally = true

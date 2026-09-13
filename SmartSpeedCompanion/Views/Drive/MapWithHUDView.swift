@@ -2,6 +2,22 @@ import SwiftUI
 import MapKit
 import UIKit
 
+/// Reports the bottom edge (global-space points) of MapWithHUDView's top
+/// chrome — the whole Group above the middle Spacer (offline banner,
+/// navigation card, Add Stops pill, nearby-amenities card, search bar…).
+/// Consumed by `LiveMapView.updateUIView` to drop the native compass +
+/// tracking buttons just below that chrome. Replaces the hardcoded
+/// 155 + 35 + 40 estimate that kept going stale every time the card stack
+/// gained or lost a row (TestFlight 2.3.0 b640, then again b653:
+/// chslmadhuri@gmail.com — "Move the directions panel thing more up, so that
+/// these circles buttons are not covered.").
+struct TopChromeBottomKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 public struct MapWithHUDView: View {
     @EnvironmentObject var driveViewModel: DriveViewModel
     @Environment(\.horizontalSizeClass) var hSizeClass
@@ -62,7 +78,7 @@ public struct MapWithHUDView: View {
                                 .transition(.move(edge: .bottom).combined(with: .opacity))
                         }
 
-                        // Look Around + Apple Maps shortcut row shown right
+                        // "Add Stops" shortcut pill shown right
                         // under the navigation instruction card while we are
                         // actively navigating to a destination.
                         if driveViewModel.isNavigating, let dest = driveViewModel.destination {
@@ -119,6 +135,29 @@ public struct MapWithHUDView: View {
                     }
                     } // Group — top section
                     .offset(y: -35)
+                    // Measure the REAL bottom edge of the top chrome and
+                    // publish it for LiveMapView's compass/tracking-button
+                    // drop constraint. Offsets are purely visual and never
+                    // affect layout, so the measured frame IS the frame the
+                    // user sees; the -35 mirrors the visual offset above
+                    // (which layout does not know about). While guiding, add
+                    // 14 pt of breathing room so the compass lands clear of
+                    // the card's bottom glass corner instead of touching it.
+                    .background(
+                        GeometryReader { chromeGeo in
+                            Color.clear.preference(
+                                key: TopChromeBottomKey.self,
+                                value: max(chromeGeo.frame(in: .global).maxY - 35
+                                    + (driveViewModel.isNavigating || driveViewModel.isSelectingRoute ? 14 : 0),
+                                    0)
+                            )
+                        }
+                    )
+                    .onPreferenceChange(TopChromeBottomKey.self) { bottom in
+                        if driveViewModel.topChromeBottom != bottom {
+                            driveViewModel.topChromeBottom = bottom
+                        }
+                    }
 
                     Spacer()
 
@@ -752,8 +791,11 @@ fileprivate struct SearchBarView: View {
         dismissKeyboard()
 
         guard !query.isEmpty else {
+            // Empty Search submit just collapses the keyboard. Stay in search
+            // mode (TestFlight 2.3.0 b643: backspacing to empty must not snap
+            // the bottom HUD back over the map) — the X button is the
+            // deliberate exit, and it clears `isSearchingLocally` itself.
             isShowingSubmittedResults = false
-            driveViewModel.isSearchingLocally = false
             return
         }
 
@@ -1280,28 +1322,36 @@ fileprivate struct NavigationShortcutsRow: View {
     @EnvironmentObject var driveViewModel: DriveViewModel
     let destination: MKMapItem
 
+    // The row is intentionally NOT horizontally scrollable.
+    // It once held several shortcut pills and panned side to side on
+    // purpose; with only the single in-app "Add Stops" action left (the
+    // external Apple Maps handoff was removed as redundant), the lone pill
+    // just rubber-banded under the finger. TestFlight 2.3.0 (b653)
+    // feedback (chslmadhuri@gmail.com): "Horizontal to add stops button,
+    // if I swipe, the add stop buttons scrolls side to side. This was on
+    // purpose many features back, but not in use anymore. Remove this."
+    // A plain HStack keeps the button with no pan gesture.
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                // Keep only the in-app stop action in this row. The external
-                // Apple Maps handoff was a redundant button in the navigation
-                // card and the latest TestFlight feedback explicitly asks for
-                // it to be removed.
-                Button(action: {
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    driveViewModel.showRouteStopsSheet = true
-                }) {
-                    Label("Add Stops", systemImage: "plus.circle")
-                        .labelStyle(.titleAndIcon)
-                        .font(.system(size: 13, weight: .bold))
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .foregroundColor(.white)
-                        .liquidGlassChip(cornerRadius: 18, interactive: true)
-                }
+        // Trailing Spacer pins the pill leading: the overlay VStack uses
+        // default center alignment, and the old full-width scroll container
+        // held this row out to both edges. Without the Spacer the pill
+        // would drift to the horizontal center after losing that container.
+        HStack(spacing: 0) {
+            Button(action: {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                driveViewModel.showRouteStopsSheet = true
+            }) {
+                Label("Add Stops", systemImage: "plus.circle")
+                    .labelStyle(.titleAndIcon)
+                    .font(.system(size: 13, weight: .bold))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .foregroundColor(.white)
+                    .liquidGlassChip(cornerRadius: 18, interactive: true)
             }
-            .padding(.horizontal, 4)
+            Spacer()
         }
+        .padding(.horizontal, 4)
     }
 }
 
