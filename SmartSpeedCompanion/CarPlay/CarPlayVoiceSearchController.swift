@@ -179,7 +179,13 @@ final class CarPlayVoiceSearchController {
                 }
             }
 
-            let targetFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber])
+            let requestedFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber])
+            guard let targetFormat = requestedFormat else {
+                DebugLogger.shared.log("Voice search: analyzer returned no compatible audio format")
+                teardownAudio()
+                presentFallback(message: "Voice search hit a snag. Try again, or use the search keyboard.")
+                return
+            }
 
             // Drain FINAL results into the shared box. Volatile (partial)
             // results are ignored — the flow only searches the completed
