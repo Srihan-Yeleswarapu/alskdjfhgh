@@ -183,7 +183,7 @@ targets:
         NSLocationAlwaysAndWhenInUseUsageDescription: "Speed Sense needs your location to monitor your speed in real time."
         NSLocationWhenInUseUsageDescription: "Speed Sense needs your location to monitor your speed."
         NSMotionUsageDescription: "Used to detect sudden deceleration for crash detection."
-        NSSiriUsageDescription: "Use Siri to start and stop your drive sessions."
+        NSSiriUsageDescription: "Use Siri to start and end drives, set a destination, stop navigation, check your speed and limit, and get ETA and turn info — hands-free."
         # "Ask To Siri" (CarPlay voice destination search): the mic map button
         # listens for a spoken destination and transcribes it fully on-device
         # (SpeechTranscriber). Mic + speech need usage descriptions but NO

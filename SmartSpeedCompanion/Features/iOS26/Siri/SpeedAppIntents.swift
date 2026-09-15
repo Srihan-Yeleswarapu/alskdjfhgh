@@ -53,18 +53,59 @@ struct NavigateToDestinationIntent: AppIntent {
     static var title: LocalizedStringResource = "Navigate to Destination"
     static var description = IntentDescription("Start navigation to a specific place")
     
+    // AppEntity parameter (not a plain String): entity parameters CAN be
+    // used in App Shortcut phrases (plain Strings cannot), which is what
+    // lets "Hey Siri, set destination to <place> in Speedio" resolve HERE
+    // instead of falling through to Apple Maps. Spoken-place resolution
+    // (MapKit search + recent searches) lives in DestinationEntityQuery.
     @Parameter(title: "Destination")
-    var destinationName: String
-    
+    var destination: DestinationEntity?
+
+    static var parameterSummary: some ParameterSummary {
+        Summary("Navigate to \(\.$destination)")
+    }
+
+    // Background execution: CarPlay's map template takes over; the phone
+    // HUD shows the route. No need to pull the app UI to the foreground.
+    static var openAppWhenRun: Bool = false
+
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let items = await AppDelegate.sharedDriveViewModel.searchDestinationTrigger(destinationName)
-        if let first = items.first {
-            await AppDelegate.sharedDriveViewModel.startNavigation(to: first)
-            return .result(dialog: "Navigating to \(first.name ?? "destination").")
+        // If the driver says just "set destination in Speedio", prompt for
+        // the place; suggestions come from recent searches.
+        let chosen: DestinationEntity
+        if let provided = destination {
+            chosen = provided
         } else {
-            return .result(dialog: "I couldn't find \(destinationName).")
+            chosen = try await $destination.requestValue("Where to?")
         }
+
+        guard let mapItem = await chosen.asMapItem() else {
+            return .result(dialog: "I couldn't find \(chosen.name). Try the full place name.")
+        }
+
+        let started = await AppDelegate.sharedDriveViewModel.startNavigation(to: mapItem)
+        if started {
+            return .result(dialog: "Navigating to \(chosen.name).")
+        }
+        return .result(dialog: "I couldn't start navigation to \(chosen.name). Try again in a moment.")
+    }
+}
+
+struct StopNavigationIntent: AppIntent {
+    static var title: LocalizedStringResource = "Stop Navigation"
+    static var description = IntentDescription("End the current Speedio route")
+
+    static var openAppWhenRun: Bool = false
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let viewModel = AppDelegate.sharedDriveViewModel
+        guard viewModel.isNavigating else {
+            return .result(dialog: "You're not navigating right now.")
+        }
+        await viewModel.endNavigation()
+        return .result(dialog: "Navigation ended.")
     }
 }
 
@@ -222,6 +263,39 @@ struct GetDistanceToDestinationIntent: AppIntent {
 
 struct SpeedAppShortcutsProvider: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
+        // ═══ 1. Set Destination — the Apple Maps fallthrough fix ═══
+        // Entity parameters are legal in phrases. Variants cover the natural
+        // prepositions ("in/through/using/with/via Speedio"); phrase matching
+        // is normalized for case and punctuation, so "set destination to X
+        // in Speedio", "navigate to X through Speedio", "directions to X
+        // using Speedio" all land on the same intent.
+        AppShortcut(
+            intent: NavigateToDestinationIntent(),
+            phrases: [
+                "Set destination to \(\.$destination) in \(.applicationName)",
+                "Set destination to \(\.$destination) through \(.applicationName)",
+                "Set destination to \(\.$destination) using \(.applicationName)",
+                "Set destination to \(\.$destination) with \(.applicationName)",
+                "Navigate to \(\.$destination) in \(.applicationName)",
+                "Navigate to \(\.$destination) through \(.applicationName)",
+                "Get directions to \(\.$destination) in \(.applicationName)",
+                "Take me to \(\.$destination) via \(.applicationName)",
+                "Drive to \(\.$destination) in \(.applicationName)"
+            ],
+            shortTitle: "Set Destination",
+            systemImageName: "arrow.triangle.turn.up.right.diamond.fill"
+        )
+        // ═══ 2. Stop Navigation ═══
+        AppShortcut(
+            intent: StopNavigationIntent(),
+            phrases: [
+                "Stop navigation in \(.applicationName)",
+                "End navigation in \(.applicationName)",
+                "Cancel navigation in \(.applicationName)"
+            ],
+            shortTitle: "Stop Navigation",
+            systemImageName: "xmark.circle.fill"
+        )
         AppShortcut(
             intent: StartDriveSessionIntent(),
             phrases: [
@@ -298,9 +372,6 @@ struct SpeedAppShortcutsProvider: AppShortcutsProvider {
             shortTitle: "Distance Left",
             systemImageName: "mappin.and.ellipse"
         )
-        // Note: NavigateToDestinationIntent is not included in AppShortcuts
-        // because String parameters cannot be used in parameterized shortcut phrases.
-        // The intent can still be triggered via Siri by name.
 
         // ═══════════════════════════════════════════════════════════════════
         // MARK: - Apple Intelligence / Siri AI — Drive Session Queries
@@ -331,15 +402,8 @@ struct SpeedAppShortcutsProvider: AppShortcutsProvider {
             shortTitle: "Latest Drive Summary",
             systemImageName: "chart.bar.fill"
         )
-        AppShortcut(
-            intent: GetTodayDriveSummaryIntent(),
-            phrases: [
-                "How were my drives today in \(.applicationName)",
-                "How did I drive today in \(.applicationName)",
-                "Check my drives today in \(.applicationName)"
-            ],
-            shortTitle: "Today's Drives",
-            systemImageName: "calendar.day.timeline.left"
-        )
+        // "Today's drives" (GetTodayDriveSummaryIntent) deliberately has no
+        // phrase slot: the 10-shortcut hard limit went to Set Destination +
+        // Stop Navigation. The intent is still invocable by name.
     }
 }
