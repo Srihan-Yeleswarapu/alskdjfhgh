@@ -99,7 +99,7 @@ final class CarPlayVoiceSearchTests: XCTestCase {
     func testSpeechUsesOnDeviceSpeechTranscriberWithFallbacks() throws {
         let controller = try String(contentsOfFile: voiceControllerSourcePath(), encoding: .utf8)
         XCTAssertTrue(controller.contains("SpeechTranscriber(locale:"), "iOS 26 path must use the on-device SpeechTranscriber API.")
-        XCTAssertTrue(controller.contains(".progressiveLiveTranscription"), "Live utterances should use the progressive preset.")
+        XCTAssertTrue(controller.contains(".progressiveTranscription"), "Live utterances should use the progressive preset.")
         XCTAssertTrue(controller.contains("SpeechTranscriber.isAvailable"), "Device capability must be checked before starting.")
         XCTAssertTrue(controller.contains("supportedLocale(equivalentTo:"), "Locale resolution must accept near-equivalents instead of failing.")
         XCTAssertTrue(controller.contains("AssetInventory.assetInstallationRequest"), "Missing on-device model assets must be downloaded on demand.")

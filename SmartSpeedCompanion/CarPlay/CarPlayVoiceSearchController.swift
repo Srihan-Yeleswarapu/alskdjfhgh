@@ -99,7 +99,7 @@ final class CarPlayVoiceSearchController {
     // MARK: Listening UI
 
     private func presentListeningAlert() {
-        let stop = CPAlertAction(title: "Stop") { [weak self] _ in
+        let stop = CPAlertAction(title: "Stop", style: .default) { [weak self] _ in
             Task { @MainActor in self?.finalizeTranscript() }
         }
         let cancel = CPAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in
@@ -165,7 +165,7 @@ final class CarPlayVoiceSearchController {
                 return
             }
 
-            let transcriber = try SpeechTranscriber(locale: resolved, preset: .progressiveLiveTranscription)
+            let transcriber = try SpeechTranscriber(locale: resolved, preset: .progressiveTranscription)
             let analyzer = SpeechAnalyzer(modules: [transcriber])
             self.analyzerHandle = analyzer
 

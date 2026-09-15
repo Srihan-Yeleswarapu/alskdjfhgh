@@ -729,7 +729,7 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
                 // on top of the map — the same surface the keyboard flow
                 // lands on. Chaining the push to the dismiss completion keeps
                 // CarPlay's template hierarchy transitions serialized.
-                self.interfaceController?.dismissTemplate(animated: false) { _ in
+                self.interfaceController?.dismissTemplate(animated: false) { _, _ in
                     Task { @MainActor in
                         self.presentSubmittedSearchResults(query: query, results: results)
                     }
