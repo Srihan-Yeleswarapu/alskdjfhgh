@@ -136,6 +136,7 @@ struct DestinationEntityQuery: EntityStringQuery {
 
     /// Recent searches (the same list the phone search bar shows) become
     /// suggested destinations.
+    private static func recentSearchEntities() -> [DestinationEntity] {
         let titles = UserDefaults.standard.stringArray(forKey: "recentSearches") ?? []
         return titles.prefix(5).map { title in
             DestinationEntity.recent(id: "recent|\(title)", title: title)
