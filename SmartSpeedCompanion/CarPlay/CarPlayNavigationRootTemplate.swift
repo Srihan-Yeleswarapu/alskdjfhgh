@@ -5,6 +5,8 @@
 import CarPlay
 import Combine
 import MapKit
+import Speech
+import AVFoundation
 import UIKit
 
 @MainActor
@@ -32,6 +34,7 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
 
     // Map Buttons
     @MainActor private var searchButton: CPMapButton!
+    @MainActor private var voiceSearchButton: CPMapButton!
     @MainActor private var savedPlacesButton: CPMapButton!
     @MainActor private var addStopButton: CPMapButton!
     @MainActor private var startStopButton: CPMapButton!
@@ -94,6 +97,10 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
     @MainActor private weak var activeSearchTemplate: CPSearchTemplate?
     @MainActor private var isTemplatePushInFlight = false
     @MainActor private var isRemovingStopInProgress = false
+    // "Ask To Siri" voice destination search. Lazily created on the first
+    // mic tap; a single instance guards against double-taps while the
+    // listening alert is being presented.
+    @MainActor private var voiceSearchController: CarPlayVoiceSearchController?
 
     @MainActor
     private func isTemplateOnStack(_ template: CPTemplate?) -> Bool {
@@ -245,6 +252,14 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
         searchButton.image = CarPlayUI.circleBadge(systemName: "magnifyingglass", color: CarPlayUI.cyan)
         searchButton.focusedImage = CarPlayUI.circleBadge(systemName: "magnifyingglass", color: CarPlayUI.cyan, size: 52)
 
+        // "Ask To Siri": speak a destination instead of typing. CarPlay-
+        // only entry point; the phone UI never shows this button.
+        voiceSearchButton = CPMapButton { [weak self] _ in
+            Task { @MainActor in self?.presentVoiceSearch() }
+        }
+        voiceSearchButton.image = CarPlayUI.circleBadge(systemName: "mic.fill", color: CarPlayUI.cyan)
+        voiceSearchButton.focusedImage = CarPlayUI.circleBadge(systemName: "mic.fill", color: CarPlayUI.cyan, size: 52)
+
         savedPlacesButton = CPMapButton { [weak self] _ in
             Task { @MainActor in self?.namedLocationsController.showSavedPlaces() }
         }
@@ -297,7 +312,7 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
         nowPlayingButton.focusedImage = CarPlayUI.circleBadge(systemName: "music.note", color: CarPlayUI.purple, size: 52)
 
         mapTemplate.mapButtons = [
-            searchButton, addStopButton, savedPlacesButton,
+            searchButton, voiceSearchButton, addStopButton, savedPlacesButton,
             muteButton, startStopButton, nowPlayingButton
         ]
 
@@ -620,6 +635,106 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
         case .store:      return CarPlayUI.iconTile(systemName: "bag.fill", color: CarPlayUI.teal)
         case .evCharger:  return CarPlayUI.iconTile(systemName: "bolt.car.fill", color: CarPlayUI.neonGreen)
         default:          return CarPlayUI.iconTile(systemName: "mappin.circle.fill", color: CarPlayUI.gray)
+        }
+    }
+
+    // MARK: - Ask To Siri (voice destination search)
+
+    /// Mic map button handler. Requests mic + speech permissions, then
+    /// starts the voice search flow. Denials surface a CarPlay alert
+    /// pointing at Settings instead of failing silently.
+    @MainActor
+    private func presentVoiceSearch() {
+        guard voiceSearchController == nil else { return } // already listening
+        guard let interfaceController else { return }
+
+        let micStatus = AVAudioApplication.shared.recordPermission
+        switch micStatus {
+        case .granted:
+            SFSpeechRecognizer.requestAuthorization { [weak self] status in
+                Task { @MainActor in
+                    guard let self else { return }
+                    if status == .authorized {
+                        self.beginVoiceSearch()
+                    } else {
+                        self.presentVoicePermissionAlert()
+                    }
+                }
+            }
+        case .undetermined:
+            AVAudioApplication.requestRecordPermission { [weak self] granted in
+                Task { @MainActor in
+                    guard let self else { return }
+                    guard granted else {
+                        self.presentVoicePermissionAlert()
+                        return
+                    }
+                    // Mic granted; speech authorization still needs its own
+                    // first-run prompt.
+                    SFSpeechRecognizer.requestAuthorization { status in
+                        Task { @MainActor in
+                            if status == .authorized {
+                                self.beginVoiceSearch()
+                            } else {
+                                self.presentVoicePermissionAlert()
+                            }
+                        }
+                    }
+                }
+            }
+        case .denied:
+            presentVoicePermissionAlert()
+        default:
+            presentVoicePermissionAlert()
+        }
+    }
+
+    @MainActor
+    private func beginVoiceSearch() {
+        guard let interfaceController else { return }
+        let controller = CarPlayVoiceSearchController()
+        voiceSearchController = controller
+        controller.start(interfaceController: interfaceController,
+                         root: self,
+                         viewModel: viewModel)
+    }
+
+    /// Presented when mic or speech permission is denied: the driver gets a
+    /// spoken-free, visible explanation and the keyboard search still works.
+    @MainActor
+    private func presentVoicePermissionAlert() {
+        let ok = CPAlertAction(title: "OK", style: .default) { _ in }
+        let alert = CPAlertTemplate(
+            titleVariants: ["Voice search needs microphone access", "Enable it in Settings → Speedio, or use the search keyboard."],
+            actions: [ok]
+        )
+        interfaceController?.presentTemplate(alert, animated: true, completion: nil)
+    }
+
+    /// Handoff from the voice flow: the transcript is searched through the
+    /// SAME submitted-results path the keyboard Search button uses, so the
+    /// driver always picks the destination (never auto-navigation).
+    @MainActor
+    func presentVoiceSearchResults(query: String) {
+        voiceSearchController = nil
+        searchGeneration &+= 1
+        let generation = searchGeneration
+        navigationManager.searchDestination(query: query) { [weak self] results in
+            guard let self else { return }
+            Task { @MainActor in
+                guard generation == self.searchGeneration else { return }
+                self.latestSearchResults = results
+                self.latestSearchResultsQuery = query
+                // Pop the listening alert FIRST, then show the results list
+                // on top of the map — the same surface the keyboard flow
+                // lands on. Chaining the push to the dismiss completion keeps
+                // CarPlay's template hierarchy transitions serialized.
+                self.interfaceController?.dismissTemplate(animated: false) { _ in
+                    Task { @MainActor in
+                        self.presentSubmittedSearchResults(query: query, results: results)
+                    }
+                }
+            }
         }
     }
 

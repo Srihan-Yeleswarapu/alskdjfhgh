@@ -184,6 +184,12 @@ targets:
         NSLocationWhenInUseUsageDescription: "Speed Sense needs your location to monitor your speed."
         NSMotionUsageDescription: "Used to detect sudden deceleration for crash detection."
         NSSiriUsageDescription: "Use Siri to start and stop your drive sessions."
+        # "Ask To Siri" (CarPlay voice destination search): the mic map button
+        # listens for a spoken destination and transcribes it fully on-device
+        # (SpeechTranscriber). Mic + speech need usage descriptions but NO
+        # entitlements; the entitlements file is untouched.
+        NSMicrophoneUsageDescription: "Speedio uses the microphone so you can speak a destination on CarPlay instead of typing it."
+        NSSpeechRecognitionUsageDescription: "Your speech is transcribed on-device to find the destination you say."
         # CPSupportedTemplates must mirror what the CarPlay folder actually
         # instantiates at runtime; ACS validates the declared set.
         # Plan A (CarPlaySceneDelegate) — the approved navigation experience.
