@@ -63,6 +63,16 @@ struct DestinationEntity: AppEntity {
         DestinationEntity(id: id, name: title, address: nil)
     }
 
+    /// Region-biased MapKit search through the shared view model so the
+    /// request is biased to where the car is. `publishResults: false` keeps
+    /// the phone-side published `searchResults` untouched — Siri resolution
+    /// must never disturb what the in-app search UI is showing.
+    /// MainActor-isolated because the shared view model is.
+    @MainActor
+    static func search(_ query: String) async -> [MKMapItem] {
+        await AppDelegate.sharedDriveViewModel.searchDestination(query: query, publishResults: false)
+    }
+
     // MARK: MKMapItem resolution
 
     /// Converts this entity back into an MKMapItem for the navigation
@@ -74,7 +84,7 @@ struct DestinationEntity: AppEntity {
             item.name = name
             return item
         }
-        let items = await searchMapKit(name)
+        let items = await Self.search(name)
         return items.first
     }
 
@@ -100,8 +110,8 @@ struct DestinationEntityQuery: EntityStringQuery {
     /// driver's location by the shared view model).
     func entities(matching string: String) async throws -> [DestinationEntity] {
         let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return await suggestedEntities() }
-        let items = await searchMapKit(trimmed)
+        guard !trimmed.isEmpty else { return try await suggestedEntities() }
+        let items = await DestinationEntity.search(trimmed)
         return items.map(DestinationEntity.from)
     }
 
@@ -124,21 +134,11 @@ struct DestinationEntityQuery: EntityStringQuery {
 
     // MARK: Helpers
 
-    /// MapKit search through the shared view model so the request is
-    /// region-biased to where the car is. `publishResults: false` keeps the
-    /// phone-side published `searchResults` untouched — Siri resolution must
-    /// never disturb what the in-app search UI is showing.
-    @MainActor
-    private func searchMapKit(_ query: String) async -> [MKMapItem] {
-        await AppDelegate.sharedDriveViewModel.searchDestination(query: query, publishResults: false)
-    }
-
     /// Recent searches (the same list the phone search bar shows) become
     /// suggested destinations.
-    private static func recentSearchEntities() -> [DestinationEntity] {
         let titles = UserDefaults.standard.stringArray(forKey: "recentSearches") ?? []
         return titles.prefix(5).map { title in
-            DestinationEntity.recent(id: "recent|\(title)", name: title)
+            DestinationEntity.recent(id: "recent|\(title)", title: title)
         }
     }
 }
