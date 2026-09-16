@@ -56,6 +56,9 @@ public struct SettingsView: View {
     // and basically like how to debug it to get cellular data to fetch
     // data." Toggled by the new NETWORK & DATA row below.
     @State private var showingNetworkHelp = false
+    // "Common Questions" FAQ sheet (SUPPORT section). Content lives in
+    // FAQContent.swift; presentation mirrors OfflineRegionsListView.
+    @State private var showingFAQ = false
     @State private var showingHapticRecorder = false
     // Bulk "Download Limits" + Offline list sheets (OFFLINE section).
     @State private var showingOfflineRegions = false
@@ -337,6 +340,13 @@ public struct SettingsView: View {
                 // state, so they're surfaced to every user.
                 Section(header: Text("SUPPORT").font(DesignSystem.labelFont).foregroundColor(DesignSystem.cyan)) {
                     Button(action: {
+                        showingFAQ = true
+                    }) {
+                        Label("Common Questions", systemImage: "questionmark.circle.fill")
+                            .foregroundColor(.white)
+                    }
+
+                    Button(action: {
                         let email = "speedsenseapp@gmail.com"
                         let urlStr = "mailto:\(email)?subject=Speedio%20Issue%20Report"
                         if let url = URL(string: urlStr) {
@@ -381,6 +391,15 @@ public struct SettingsView: View {
                 // from a button so they don't have to navigate manually.
                 .sheet(isPresented: $showingNetworkHelp) {
                     NetworkHelpSheet()
+                }
+                // Common Questions FAQ — grouped, expandable answers for the
+                // questions new users actually ask.
+                .sheet(isPresented: $showingFAQ) {
+                    FAQView()
+                        .presentationDetents([.large])
+                        .presentationDragIndicator(.visible)
+                        .presentationCornerRadius(24)
+                        .preferredColorScheme(.dark)
                 }
                 // Offline list: saved map regions + downloaded limit zones.
                 .sheet(isPresented: $showingOfflineRegions) {
