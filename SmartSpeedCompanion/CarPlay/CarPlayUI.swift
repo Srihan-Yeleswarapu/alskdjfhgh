@@ -134,4 +134,97 @@ enum CarPlayUI {
         }
         return image.withRenderingMode(.alwaysOriginal)
     }
+
+    // MARK: - Speed Limit Sign (US MUTCD R2-1 style)
+
+    /// Colors of the US regulatory speed-limit sign (MUTCD R2-1): white
+    /// face, black border, black caption + numeral. US signs are
+    /// black-on-white with no red ring — the red-ring circle is the
+    /// Vienna/UK convention the HUD previously used.
+    private static let signBlack = UIColor(red: 0.06, green: 0.06, blue: 0.06, alpha: 1)
+    private static let signWhite = UIColor(red: 0.99, green: 0.99, blue: 0.98, alpha: 1)
+
+    /// Draws the US-style speed-limit sign at any size. Both the phone HUD
+    /// (`LimitSignView`) and the CarPlay limit button render through this
+    /// single function so the two surfaces can never drift apart.
+    ///
+    /// Geometry follows MUTCD R2-1 proportions adapted to a square canvas:
+    /// ~10% corner rounding, a ~7%-of-width black border, a tight
+    /// SPEED / LIMIT caption stack, and a dominant black numeral.
+    static func speedLimitSign(value: Int?, unit: String?, size: CGFloat) -> UIImage {
+        let size = max(24, size)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.opaque = false
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: size, height: size), format: format)
+        return renderer.image { _ in
+            let rect = CGRect(x: 0, y: 0, width: size, height: size)
+            let cornerRadius = size * 0.10
+
+            // Face + thick black regulatory border.
+            let face = UIBezierPath(roundedRect: rect, cornerRadius: cornerRadius)
+            signWhite.setFill()
+            face.fill()
+            let border = UIBezierPath(
+                roundedRect: rect.insetBy(dx: size * 0.035, dy: size * 0.035),
+                cornerRadius: cornerRadius * 0.92
+            )
+            signBlack.setStroke()
+            border.lineWidth = size * 0.07
+            border.stroke()
+
+            let numeral: String
+            if let v = value, v > 0 {
+                numeral = "\(v)"
+            } else {
+                numeral = "--"
+            }
+            // Real US signs carry no unit ("35", never "35 MPH"). Metric
+            // signs (km/h) do, and metric users here historically needed the
+            // disambiguation — so the unit is drawn for anything but MPH.
+            let showUnit = numeral != "--"
+                && unit?.isEmpty == false
+                && unit?.uppercased() != "MPH"
+
+            // draw(in:) (not draw(at:)) so the centered paragraph style
+            // really centers each line horizontally in the sign.
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.alignment = .center
+            let captionAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: size * 0.15, weight: .heavy),
+                .paragraphStyle: paragraph,
+                .kern: size * 0.01
+            ]
+            let numeralFontSize = showUnit ? size * 0.33 : size * 0.40
+            let numeralAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: numeralFontSize, weight: .black),
+                .paragraphStyle: paragraph
+            ]
+
+            var y = size * 0.115
+            let captionLineHeight = size * 0.15
+            for word in ["SPEED", "LIMIT"] {
+                (word as NSString).draw(
+                    in: CGRect(x: 0, y: y, width: size, height: captionLineHeight),
+                    withAttributes: captionAttrs
+                )
+                y += captionLineHeight
+            }
+            let numeralHeight = numeralFontSize * 1.1
+            (numeral as NSString).draw(
+                in: CGRect(x: 0, y: y - size * 0.015, width: size, height: numeralHeight),
+                withAttributes: numeralAttrs
+            )
+            if showUnit, let unit {
+                let unitAttrs: [NSAttributedString.Key: Any] = [
+                    .font: UIFont.systemFont(ofSize: size * 0.10, weight: .heavy),
+                    .paragraphStyle: paragraph,
+                    .kern: size * 0.01
+                ]
+                (unit as NSString).draw(
+                    in: CGRect(x: 0, y: y + numeralHeight - size * 0.045, width: size, height: size * 0.12),
+                    withAttributes: unitAttrs
+                )
+            }
+        }.withRenderingMode(.alwaysOriginal)
+    }
 }

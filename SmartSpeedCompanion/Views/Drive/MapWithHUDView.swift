@@ -1044,48 +1044,31 @@ fileprivate struct LimitSignView: View {
     var body: some View {
         Button(action: onTap) {
             VStack(spacing: 4) {
-                ZStack {
-                Circle()
-                    .fill(Color.white)
-                    .frame(width: isLandscape ? 40 : 52, height: isLandscape ? 40 : 52)
+                // US MUTCD R2-1 regulatory sign — white face, thick black
+                // border, "SPEED LIMIT" caption and a dominant black numeral.
+                // Rendering goes through the one shared UIKit renderer
+                // (CarPlayUI.speedLimitSign) so the phone HUD and the CarPlay
+                // limit button are pixel-identical and cannot drift apart.
+                // (Replaces the previous UK/Vienna-style red-ring circle.)
+                let measurementSystem = SpeedFormatting.measurementSystem()
+                let limitUnit = SpeedFormatting.unitLabelShort(measurementSystem: measurementSystem)
+                let limitValue = SpeedFormatting.displayLimit(
+                    forMph: limit,
+                    measurementSystem: measurementSystem
+                )
+                Image(uiImage: CarPlayUI.speedLimitSign(
+                    value: limitValue,
+                    unit: limitUnit,
+                    size: isLandscape ? 52 : 64
+                ))
+                .resizable()
+                .interpolation(.high)
+                .frame(width: isLandscape ? 52 : 64, height: isLandscape ? 52 : 64)
+                .accessibilityLabel("Speed limit sign")
 
-                Circle()
-                    .stroke(Color(hex: "#FF3D71"), lineWidth: 3)
-                    .frame(width: isLandscape ? 40 : 52, height: isLandscape ? 40 : 52)
-
-                VStack(spacing: 0) {
-                    // LimitSignView is the most prominent speed-limit display
-                    // in the app. Routes through `SpeedFormatting` so there's
-                    // exactly one mph→display conversion path across the HUD,
-                    // widget, Live Activity, and CarPlay. (TestFlight 2.1.4
-                    // feedback: this view was already correct, but the inline
-                    // conversion made future drift bugs easy.)
-                    let limitUnit = SpeedFormatting.unitLabelShort(
-                        measurementSystem: SpeedFormatting.measurementSystem()
-                    )
-                    let limitValue = SpeedFormatting.displayLimit(
-                        forMph: limit,
-                        measurementSystem: SpeedFormatting.measurementSystem()
-                    )
-                    Text(limit == 0 ? "--" : "\(limitValue)")
-                        .font(.system(size: isLandscape ? 17 : 21, weight: .black))
-                        .foregroundColor(.black)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-
-                    Text(limitUnit)
-                        .font(.system(size: isLandscape ? 7 : 9, weight: .black))
-                        .foregroundColor(Color(hex: "#FF3D71"))
-                }
-                .offset(y: isLandscape ? -2 : -1)
-            }
-            .padding(6) // glass circle behind the limit sign
-            .background(Circle().fill(Material.ultraThinMaterial))
-            .clipShape(Circle())
-
-            Text(sourceChip.text)
-                .font(.system(size: isLandscape ? 8 : 10, weight: .bold))
-                .foregroundColor(sourceChip.color)
+                Text(sourceChip.text)
+                    .font(.system(size: isLandscape ? 8 : 10, weight: .bold))
+                    .foregroundColor(sourceChip.color)
             }
         }
         .buttonStyle(.plain)                  // keep flat aesthetic when not pressed

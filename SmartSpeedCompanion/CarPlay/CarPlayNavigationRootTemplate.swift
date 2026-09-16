@@ -31,6 +31,10 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
     @MainActor private var limitButton: CPBarButton!
     @MainActor private var roadNameButton: CPBarButton!
     @MainActor private var sessionTimerButton: CPBarButton!
+    // Last limit value rendered into the limit button's sign image. The HUD
+    // update runs on the ~1 Hz speed tick; caching by displayed value keeps
+    // UIKit sign rendering to actual limit changes only.
+    @MainActor private var lastRenderedSignLimit: Int = -1
 
     // Map Buttons
     @MainActor private var searchButton: CPMapButton!
@@ -236,7 +240,9 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
             Task { @MainActor in self?.presentTripInfo() }
         }
         roadNameButton = CPBarButton(title: "") { _ in }
-        limitButton = CPBarButton(title: "LIMIT --") { _ in }
+        // Sign image arrives on the first updateHUD tick; empty title avoids
+        // a flash of "LIMIT --" text before the image lands.
+        limitButton = CPBarButton(title: "") { _ in }
         sessionTimerButton = CPBarButton(title: "") { [weak self] _ in
             Task { @MainActor in self?.presentDriveDetails() }
         }
@@ -437,10 +443,17 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
         let unitShort = SpeedFormatting.unitLabelShort(measurementSystem: system)
         let displayLimit = SpeedFormatting.displayLimit(forMph: limit, measurementSystem: system)
         speedButton.title = "\(Int(speed)) \(unitShort)"
-        limitButton.title = limit == 0 ? "LIMIT --" : "LIMIT \(displayLimit) \(unitShort)"
-        // Keep the limit button text-only so CarPlay shows the posted speed
-        // limit instead of a green status capsule in the top-right HUD.
-        limitButton.image = nil
+        limitButton.title = ""
+        // US MUTCD R2-1 sign on the CarPlay top bar — the same shared
+        // renderer the phone HUD uses, so both surfaces are identical.
+        // Re-rendered only when the displayed limit actually changes (the
+        // ~1 Hz HUD tick would otherwise churn UIKit drawing every second).
+        if displayLimit != lastRenderedSignLimit {
+            lastRenderedSignLimit = displayLimit
+            let sign = CarPlayUI.speedLimitSign(value: displayLimit, unit: unitShort, size: 40)
+            limitButton.image = sign
+            limitButton.focusedImage = sign
+        }
         roadNameButton.title = (roadName?.isEmpty == false) ? roadName! : ""
         // Mirror the same snapshot to the CarPlay Now Playing screen so it
         // never shows a stale speed/road/status while the driver glances at
