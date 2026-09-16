@@ -223,6 +223,10 @@ final class CarPlayMapController: NSObject, MKMapViewDelegate {
     /// must not call `setVisibleMapRect` for active guidance: that operation
     /// fits the entire trip and overrides the close vehicle-following camera.
     private func updateNavigationCamera() {
+        // The driver has the panning interface up: their dragged camera is
+        // authoritative until they dismiss it. The animator resumes smoothly
+        // from the current camera on dismissal (EMA continues in place).
+        guard !isPanningInterfaceActive else { return }
         guard viewModel.isNavigating,
               viewModel.navigationCoordinator.currentRoute != nil else { return }
 
@@ -392,6 +396,69 @@ final class CarPlayMapController: NSObject, MKMapViewDelegate {
         case alternate
         case dimmed
     }
+
+    // MARK: - Driver Panning (CarPlay panning interface)
+    //
+    // CPMapTemplate owns the panning chrome (crosshair, arrows, Done); this
+    // controller owns the MKMapView underneath it. While the panning
+    // interface is visible, ALL automatic camera work stands down — system
+    // follow (`.none`) and the navigation camera animator — so the map stays
+    // exactly where the driver dragged it. Dismissing the interface is the
+    // "recenter" affordance: user tracking flips back on and the navigation
+    // animator resumes from the current camera.
+
+    private(set) var isPanningInterfaceActive = false
+
+    func setPanningInterfaceActive(_ active: Bool) {
+        isPanningInterfaceActive = active
+        // `.follow` re-centers on the vehicle when panning ends.
+        mapView.userTrackingMode = active ? .none : .follow
+    }
+
+    /// Live drag from the panning gesture. Screen-space translation converts
+    /// through the map's projection, so this stays correct on the heading-up
+    /// navigation camera.
+    func pan(by translation: CGPoint) {
+        guard isPanningInterfaceActive else { return }
+        // The content follows the finger: finger right (+x) means the camera
+        // center moves left (-x), and likewise vertically.
+        let mid = CGPoint(x: mapView.bounds.midX, y: mapView.bounds.midY)
+        let target = CGPoint(x: mid.x - translation.x, y: mid.y - translation.y)
+        mapView.centerCoordinate = mapView.convert(target, toCoordinateFrom: mapView)
+    }
+
+    /// Discrete pan from the panning chrome's arrow buttons. Direction is
+    /// where the CONTENT moves, so the camera center moves the opposite way.
+    func pan(in direction: CPMapTemplatePanDirection) {
+        guard isPanningInterfaceActive else { return }
+        var dx: CGFloat = 0
+        var dy: CGFloat = 0
+        if direction.contains(.left) { dx += mapView.bounds.width * 0.33 }
+        if direction.contains(.right) { dx -= mapView.bounds.width * 0.33 }
+        if direction.contains(.up) { dy += mapView.bounds.height * 0.33 }
+        if direction.contains(.down) { dy -= mapView.bounds.height * 0.33 }
+        guard dx != 0 || dy != 0 else { return }
+        let target = CGPoint(x: mapView.bounds.midX + dx, y: mapView.bounds.midY + dy)
+        mapView.centerCoordinate = mapView.convert(target, toCoordinateFrom: mapView)
+    }
+
+    /// Zoom buttons in the panning chrome. `factor` < 1 zooms in, > 1 out,
+    /// applied multiplicatively to the camera distance (clamped to sane
+    /// street/region scales so mashing the button can't divide by zero or
+    /// leave the planet).
+    func zoom(by factor: Double) {
+        guard isPanningInterfaceActive else { return }
+        let camera = mapView.camera
+        camera.centerCoordinateDistance = min(max(camera.centerCoordinateDistance * factor, 80), 300_000)
+        mapView.camera = camera
+    }
+
+    // Gesture bookkeeping for head units that deliver begin/update/end
+    // instead of cumulative translation: the real movement arrives through
+    // `pan(by:)` / `pan(in:)` / `zoom(by:)`, these only mark the gesture.
+    func panGestureBegan(at location: CGPoint) {}
+    func panGestureEnded() {}
+    func zoomGestureBegan() {}
 }
 
 private final class CarPlayRoutePolyline: MKPolyline {}

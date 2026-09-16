@@ -179,6 +179,10 @@ class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate, CPT
         // Explicit check before accessing mapTemplate to avoid potential race condition
         guard let root = navigationRoot else { return }
         let speedMapTemplate = root.mapTemplate
+        // Pan/zoom delegate callbacks on the map template drive the
+        // MKMapView installed above — hand the controller over so the
+        // root template can reach it (weak; nils itself on teardown).
+        root.mapController = carPlayMapController
         interfaceController.setRootTemplate(speedMapTemplate, animated: true, completion: nil)
 
         // iPhone → CarPlay handoff: if navigation is already active on

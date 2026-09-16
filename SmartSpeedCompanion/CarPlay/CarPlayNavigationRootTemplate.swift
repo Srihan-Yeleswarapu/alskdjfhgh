@@ -1296,6 +1296,85 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
         }
     }
 
+    // MARK: - Driver Map Panning (CPMapTemplate panning interface)
+    //
+    // The MKMapView under the CPWindow is owned by CarPlayMapController;
+    // the scene delegate hands it to us after setup so the pan/zoom
+    // delegate callbacks can drive it. Nil on the legacy no-window connect
+    // path — every callback tolerates that via optional chaining.
+    weak var mapController: CarPlayMapController?
+
+    /// Apple's guidance: allow the panning interface only while moving, so
+    /// a parked car isn't burdened with panning chrome. Mid-navigation the
+    /// interface stays available — scouting ahead of the route is exactly
+    /// when a driver needs it.
+    nonisolated func mapTemplateShouldShowPanningInterface(_ mapTemplate: CPMapTemplate) -> Bool {
+        MainActor.assumeIsolated { !viewModel.isRecording }
+    }
+
+    nonisolated func mapTemplateDidShowPanningInterface(_ mapTemplate: CPMapTemplate) {
+        Task { @MainActor in
+            // Freeze ALL automatic camera work while the driver pans.
+            self.mapController?.setPanningInterfaceActive(true)
+        }
+    }
+
+    nonisolated func mapTemplateDidDismissPanningInterface(_ mapTemplate: CPMapTemplate) {
+        Task { @MainActor in
+            // "Done" doubles as recenter: user tracking flips back on and
+            // the navigation camera animator resumes from the current view.
+            self.mapController?.setPanningInterfaceActive(false)
+        }
+    }
+
+    /// Live drag from the panning gesture.
+    nonisolated func mapTemplate(_ mapTemplate: CPMapTemplate, didUpdatePanGestureWithTranslation translation: CGPoint, velocity: CGPoint) {
+        Task { @MainActor in
+            self.mapController?.pan(by: translation)
+        }
+    }
+
+    /// Single-finger pan on head units that deliver begin/update/end
+    /// instead of cumulative translation updates.
+    nonisolated func mapTemplate(_ mapTemplate: CPMapTemplate, panBeganWith location: CGPoint) {
+        Task { @MainActor in
+            self.mapController?.panGestureBegan(at: location)
+        }
+    }
+
+    nonisolated func mapTemplate(_ mapTemplate: CPMapTemplate, panWith direction: CPMapTemplate.PanDirection) {
+        Task { @MainActor in
+            // The panning chrome's directional arrows.
+            self.mapController?.pan(in: direction)
+        }
+    }
+
+    nonisolated func mapTemplate(_ mapTemplate: CPMapTemplate, panEndedWith location: CGPoint) {
+        Task { @MainActor in
+            self.mapController?.panGestureEnded()
+        }
+    }
+
+    /// Two-finger pinch zoom (newer head units / trackpad-style input).
+    /// Scale > 1 means the content spreads apart = zoom in = smaller
+    /// camera distance.
+    nonisolated func mapTemplate(_ mapTemplate: CPMapTemplate, didUpdateZoomGestureWithCenter center: CGPoint, scale: CGFloat, velocity: CGFloat) {
+        Task { @MainActor in
+            self.mapController?.zoom(by: 1.0 / Double(max(scale, 0.01)))
+        }
+    }
+
+    nonisolated func mapTemplateDidBeginZoomGesture(_ mapTemplate: CPMapTemplate) {
+        Task { @MainActor in
+            self.mapController?.zoomGestureBegan()
+        }
+    }
+
+    nonisolated func mapTemplateDidBeginPanGesture(_ mapTemplate: CPMapTemplate) {
+        // Gesture bookkeeping is owned by the MKMapView itself; the
+        // cumulative-translation callback above does the real work.
+    }
+
     // MARK: - CPMapTemplateDelegate
 
     nonisolated func mapTemplate(_ mapTemplate: CPMapTemplate, startedTrip trip: CPTrip, using routeChoice: CPRouteChoice) {
