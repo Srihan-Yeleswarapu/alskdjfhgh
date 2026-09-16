@@ -429,7 +429,7 @@ final class CarPlayMapController: NSObject, MKMapViewDelegate {
 
     /// Discrete pan from the panning chrome's arrow buttons. Direction is
     /// where the CONTENT moves, so the camera center moves the opposite way.
-    func pan(in direction: CPMapTemplatePanDirection) {
+    func pan(in direction: CPMapTemplate.PanDirection) {
         guard isPanningInterfaceActive else { return }
         var dx: CGFloat = 0
         var dy: CGFloat = 0

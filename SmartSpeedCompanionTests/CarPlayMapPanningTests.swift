@@ -40,6 +40,10 @@ final class CarPlayMapPanningTests: XCTestCase {
             "The panning chrome's directional arrows must pan the map."
         )
         XCTAssertTrue(
+            source.contains("self.mapController?.pan(in: direction)"),
+            "Arrow pans must route into the map controller's PanDirection mover."
+        )
+        XCTAssertTrue(
             source.contains("didUpdateZoomGestureWithCenter"),
             "Pinch zoom from newer head units must scale the camera."
         )
