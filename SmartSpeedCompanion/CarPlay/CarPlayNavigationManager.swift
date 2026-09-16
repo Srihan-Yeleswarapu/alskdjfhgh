@@ -28,7 +28,38 @@ public class CarPlayNavigationManager: NSObject, NavigationActionDelegate {
     /// Invalidates progress callbacks from a replaced CarPlay session.
     private var navigationGeneration: UInt64 = 0
     private var lastMatchedRemainingDistance: CLLocationDistance = 0
-    
+
+    // ── Session without navigation (idle CarPlay driving surface) ────
+    //
+    // Apple renders a map template with bare map buttons until the app
+    // calls `startNavigationSession(for:)`, and Speedio only called that
+    // once a real route was running. A driver who connected to CarPlay
+    // without picking a destination therefore stared at an empty map:
+    // speed/limit lived on the phone HUD, and the only way to surface
+    // anything in the head unit's guidance chrome was turn-by-turn.
+    //
+    // `beginSessionWithoutNavigation()` starts a lightweight
+    // CPNavigationSession at connect time — a zero-length placeholder
+    // trip, no real route — and renders the shared DriveViewModel's live
+    // speed/limit/road state into the session's maneuver card. That is
+    // the CarPlay-native way to run a session without navigation. A real
+    // trip replaces it through `endIdleSession(forNavigationTransition:)`;
+    // the stop-echo latch armed there keeps CarPlay's delayed
+    // `mapTemplateDidStopNavigating` callback (which carries no session
+    // identity — see the reroute note above) from being mistaken for the
+    // driver stopping the brand-new navigation.
+    private var idleSession: CPNavigationSession?
+    private var idleTrip: CPTrip?
+    private var idleStateCancellable: AnyCancellable?
+    private var lastIdleManeuverText: String?
+    private var lastIdleManeuverSymbol: String?
+    /// Until this instant, `mapTemplateDidStopNavigating` callbacks are the
+    /// echo of the placeholder session's programmatic finishTrip — not the
+    /// driver pressing Stop. Time-boxed because the echo is best-effort:
+    /// when it never arrives the latch must expire on its own, and the
+    /// callback alone cannot be attributed to a session.
+    private var idleStopEchoGuardUntil: Date?
+
     public init(viewModel: DriveViewModel, mapTemplate: CPMapTemplate) {
         self.viewModel = viewModel
         self.mapTemplate = mapTemplate
@@ -97,6 +128,9 @@ public class CarPlayNavigationManager: NSObject, NavigationActionDelegate {
         navigationGeneration &+= 1
         locationCancellable?.cancel()
         locationCancellable = nil
+        // Disconnect also tears down the placeholder session — leaving it
+        // running would leak the CPNavigationSession into the framework.
+        endIdleSession(forNavigationTransition: false)
         navigationSession?.finishTrip()
         navigationSession = nil
         currentManeuver = nil
@@ -107,8 +141,133 @@ public class CarPlayNavigationManager: NSObject, NavigationActionDelegate {
     /// before deallocation (crash path, unexpected teardown order).
     deinit {
         estimateCancellable?.cancel()
+        idleStateCancellable?.cancel()
+        idleSession?.finishTrip()
         navigationSession?.finishTrip()
     }
+
+    // MARK: - Session Without Navigation
+
+    /// Starts the placeholder CPNavigationSession that surfaces the live
+    /// speed/limit banner before — and without — any turn-by-turn route.
+    /// No-ops while real navigation is active or a placeholder already runs.
+    public func beginSessionWithoutNavigation() {
+        guard !viewModel.isNavigating, idleSession == nil else { return }
+
+        let routeChoice = CPRouteChoice(
+            summaryVariants: ["Drive"],
+            additionalInformationVariants: ["Live speed and limit"],
+            selectionSummaryVariants: ["Drive"])
+        // Both ends point at the vehicle: this trip is a UI surface for the
+        // speed banner, not a routable request. It is finished — never
+        // guided — the moment a real trip starts or CarPlay disconnects.
+        let here = MKMapItem.forCurrentLocation()
+        let trip = CPTrip(origin: here, destination: here, routeChoices: [routeChoice])
+        idleTrip = trip
+        idleSession = mapTemplate.startNavigationSession(for: trip)
+        // The estimates panel intentionally reads zero: there is no route,
+        // so there is no remaining distance or time to show.
+        mapTemplate.updateEstimates(
+            CPTravelEstimates(
+                distanceRemaining: Measurement(value: 0, unit: UnitLength.meters),
+                timeRemaining: 0),
+            for: trip)
+
+        idleStateCancellable = viewModel.$speed
+            .combineLatest(viewModel.$limit, viewModel.$status, viewModel.$currentRoadName)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _, _, _, _ in
+                self?.refreshIdleManeuverCard()
+            }
+        refreshIdleManeuverCard()
+    }
+
+    /// Renders the current speed sentence into the placeholder session's
+    /// maneuver card (the head unit's guidance banner). The update is skipped
+    /// entirely when nothing the card shows changed, so a stationary car with
+    /// a steady limit costs no CarPlay IPC at all.
+    private func refreshIdleManeuverCard() {
+        guard idleSession != nil else { return }
+        let system = SpeedFormatting.measurementSystem()
+        let unitShort = SpeedFormatting.unitLabelShort(measurementSystem: system)
+        let displayLimit = SpeedFormatting.displayLimit(
+            forMph: viewModel.limit, measurementSystem: system)
+
+        var summary = "\(Int(viewModel.speed)) \(unitShort)"
+        if displayLimit > 0 { summary += " · Limit \(displayLimit)" }
+        if let road = viewModel.currentRoadName, !road.isEmpty { summary += " · \(road)" }
+
+        // The banner mirrors the same status colors the alert engine uses.
+        // Overspeed additionally raises the full CPNavigationAlert through
+        // CarPlayNavigationRootTemplate.handleAlerts, which overlays this
+        // card — the icon here only has to survive the in-between states.
+        let symbol: String
+        switch viewModel.status {
+        case .over:    symbol = "exclamationmark.octagon.fill"
+        case .warning: symbol = "exclamationmark.triangle.fill"
+        case .safe:    symbol = "speedometer"
+        }
+
+        guard summary != lastIdleManeuverText || symbol != lastIdleManeuverSymbol else { return }
+        lastIdleManeuverText = summary
+        lastIdleManeuverSymbol = symbol
+
+        let maneuver = CPManeuver()
+        maneuver.instructionVariants = [summary]
+        if let icon = UIImage(systemName: symbol) {
+            maneuver.symbolImage = icon
+        }
+        idleSession?.upcomingManeuvers = [maneuver]
+    }
+
+    /// Finishes the placeholder session. `forNavigationTransition: true` is
+    /// used when a real trip is taking over: the programmatic finishTrip can
+    /// make CarPlay echo `mapTemplateDidStopNavigating` with no session
+    /// identity, and the time-boxed latch keeps that echo from cancelling the
+    /// navigation that is starting right now.
+    public func endIdleSession(forNavigationTransition: Bool) {
+        let hadSession = idleSession != nil
+        idleSession?.finishTrip()
+        releaseIdleSessionIfPresent()
+        idleStopEchoGuardUntil = (forNavigationTransition && hadSession)
+            ? Date().addingTimeInterval(Self.idleStopEchoGuardWindow)
+            : nil
+    }
+
+    /// Releases the placeholder-session bindings after the framework ended
+    /// the session on its own (driver tapped End on the head unit, or the
+    /// framework recycled it during a preview). No-op when the placeholder
+    /// was already replaced or torn down.
+    ///
+    /// Deliberately does NOT touch `idleStopEchoGuardUntil`: the latch
+    /// belongs to the navigation transition, not to the session bindings,
+    /// and the stop-callback handler must be able to release stale bindings
+    /// BEFORE consulting the latch without erasing it.
+    public func releaseIdleSessionIfPresent() {
+        idleStateCancellable?.cancel()
+        idleStateCancellable = nil
+        idleSession = nil
+        idleTrip = nil
+        lastIdleManeuverText = nil
+        lastIdleManeuverSymbol = nil
+    }
+
+    /// True while `mapTemplateDidStopNavigating` should be treated as the
+    /// echo of a just-finished placeholder session rather than a driver stop.
+    public func isIdleStopEchoGuardActive(now: Date = Date()) -> Bool {
+        guard let until = idleStopEchoGuardUntil else { return false }
+        if now >= until {
+            idleStopEchoGuardUntil = nil
+            return false
+        }
+        return true
+    }
+
+    /// See `idleStopEchoGuardUntil`. Short by design: the echo, when it
+    /// exists at all, arrives within a couple of seconds on every supported
+    /// head unit, and a long window could swallow a real driver stop that
+    /// immediately follows a navigation start.
+    static let idleStopEchoGuardWindow: TimeInterval = 3
 
     /// Invalidates the old progress stream before NavigationCoordinator
     /// publishes a replacement leg. Keep the CPNavigationSession alive: the
@@ -178,6 +337,14 @@ public class CarPlayNavigationManager: NSObject, NavigationActionDelegate {
         guard !viewModel.isNavigating,
               viewModel.navigationCoordinator.currentRoute == nil else { return }
         endNavigation()
+        // Navigation ended while CarPlay is still connected (arrival, or the
+        // driver stopped guidance from the phone). Restore the "session
+        // without navigation" surface so the head unit keeps showing the
+        // live speed/limit banner for the rest of the drive. Deliberately
+        // NOT called from endNavigation() itself: the startedTrip route
+        // replacement also runs endNavigation() mid-handoff, and resurrecting
+        // the placeholder there would race the trip that is starting.
+        beginSessionWithoutNavigation()
     }
     
     // MARK: - Search
@@ -278,6 +445,12 @@ public class CarPlayNavigationManager: NSObject, NavigationActionDelegate {
     
     // MARK: - Navigation Control
     public func startNavigation(route: MKRoute, destination: MKMapItem) {
+        // A placeholder session-without-navigation must make way for the real
+        // trip: finish it here, before the new session starts, so the template
+        // never runs two sessions at once. The transition also arms the stop-
+        // echo latch (see endIdleSession) so the finish's delayed callback
+        // cannot look like the driver stopping the brand-new navigation.
+        endIdleSession(forNavigationTransition: true)
         // Reroutes and multi-stop leg transitions reuse the active CarPlay
         // session. A CPMapTemplate stop callback has no session identity, so
         // finishing and immediately recreating the session can make a delayed
@@ -403,6 +576,7 @@ public class CarPlayNavigationManager: NSObject, NavigationActionDelegate {
 
     public func endNavigation() {
         navigationGeneration &+= 1
+        endIdleSession(forNavigationTransition: false)
         navigationSession?.finishTrip()
         navigationSession = nil
         currentTrip = nil

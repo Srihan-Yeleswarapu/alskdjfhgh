@@ -214,6 +214,16 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
         navigationManager.startNavigation(route: route, destination: destination)
     }
 
+    /// Begins the placeholder CPNavigationSession that surfaces the live
+    /// speed/limit banner on the head unit WITHOUT any turn-by-turn route —
+    /// the CarPlay "session without navigation" surface. Called once the map
+    /// template is installed as root (startNavigationSession is only valid on
+    /// a template that is in the hierarchy). A no-op while real navigation is
+    /// active; the real trip's session replaces the placeholder.
+    func beginSessionWithoutNavigationIfNeeded() {
+        navigationManager.beginSessionWithoutNavigation()
+    }
+
     /// Clean up the active CarPlay navigation session without ending
     /// phone-side navigation. Called by CarPlaySceneDelegate when the
     /// user disconnects so the system framework doesn't leak the session.
@@ -318,8 +328,15 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
         nowPlayingButton.focusedImage = CarPlayUI.circleBadge(systemName: "music.note", color: CarPlayUI.purple, size: 52)
 
         mapTemplate.mapButtons = [
+            // Start/Stop FIRST: head units render only the first handful of
+            // map buttons (the same truncation that hid the appended snooze
+            // button — see updateMapButtons). Sitting 6th of 7, the driver's
+            // primary "start a session without navigation" control was cut
+            // off on most screens, making a drive session unreachable from
+            // CarPlay unless a route was started.
+            startStopButton,
             searchButton, voiceSearchButton, addStopButton, savedPlacesButton,
-            muteButton, startStopButton, nowPlayingButton
+            muteButton, nowPlayingButton
         ]
 
         Task { @MainActor in
@@ -1404,7 +1421,43 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
             // CarPlay session cleanly; this callback should only fire
             // when the user explicitly stops navigation while connected.
             guard self.interfaceController != nil else { return }
-            if self.viewModel.isNavigating { await self.viewModel.navigationCoordinator.endNavigation() }
+            // The framework may stop the placeholder session on its own
+            // (trip previews, head-unit recycles). Its stop callback carries
+            // no session identity, so drop any stale placeholder bindings
+            // before deciding what this stop means.
+            self.navigationManager.releaseIdleSessionIfPresent()
+            // An echo of a just-finished placeholder session is not a driver
+            // stop (see CarPlayNavigationManager.endIdleSession).
+            guard !self.navigationManager.isIdleStopEchoGuardActive() else { return }
+            if self.viewModel.isNavigating {
+                await self.viewModel.navigationCoordinator.endNavigation()
+            } else {
+                // No navigation and the session stopped anyway: the framework
+                // recycled or invalidated the placeholder on its own. Rebuild
+                // the speed banner so the head unit's driving surface
+                // survives. `beginSessionWithoutNavigation` re-guards, so a
+                // duplicate callback cannot double-start a session. Skip
+                // while a CarPlay-started trip is mid-handoff — its real
+                // session is about to replace the placeholder, and a stray
+                // placeholder stop echo must not churn a wasted rebuild.
+                guard !self.isHandlingCarPlayTrip else { return }
+                self.navigationManager.beginSessionWithoutNavigation()
+            }
+        }
+    }
+
+    /// The driver dismissed a trip preview (or CarPlay cancelled navigation
+    /// setup). Show the "session without navigation" speed banner again so a
+    /// cancelled destination search never strands the head unit on a bare
+    /// map. During active navigation the guard below makes this a no-op —
+    /// real teardown continues to flow through mapTemplateDidStopNavigating.
+    nonisolated func mapTemplateDidCancelNavigation(_ mapTemplate: CPMapTemplate) {
+        Task { @MainActor in
+            guard self.interfaceController != nil else { return }
+            self.navigationManager.releaseIdleSessionIfPresent()
+            guard !self.navigationManager.isIdleStopEchoGuardActive(),
+                  !self.viewModel.isNavigating else { return }
+            self.navigationManager.beginSessionWithoutNavigation()
         }
     }
 }

@@ -190,6 +190,14 @@ class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate, CPT
         // navigation session so the driver sees turn-by-turn guidance
         // without having to re-select the destination.
         root.resumeActiveNavigationIfAny()
+        // Session WITHOUT navigation: once the template is installed as root
+        // (CPMapTemplate.startNavigationSession is only valid on a template
+        // in the hierarchy), begin the placeholder CPNavigationSession that
+        // surfaces the live speed/limit banner on the head unit with no
+        // destination selected — the head unit is a full driving surface from
+        // the moment CarPlay connects, not a bare map. No-op when the handoff
+        // above just installed a real trip.
+        root.beginSessionWithoutNavigationIfNeeded()
     }
     
     // MARK: - Dashboard Support
