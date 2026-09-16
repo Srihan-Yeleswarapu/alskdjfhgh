@@ -450,9 +450,9 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
         // ~1 Hz HUD tick would otherwise churn UIKit drawing every second).
         if displayLimit != lastRenderedSignLimit {
             lastRenderedSignLimit = displayLimit
-            let sign = CarPlayUI.speedLimitSign(value: displayLimit, unit: unitShort, size: 40)
-            limitButton.image = sign
-            limitButton.focusedImage = sign
+            // CPBarButton has no focusedImage (that's CPMapButton); the
+            // plain image is all the top-bar button needs.
+            limitButton.image = CarPlayUI.speedLimitSign(value: displayLimit, unit: unitShort, size: 40)
         }
         roadNameButton.title = (roadName?.isEmpty == false) ? roadName! : ""
         // Mirror the same snapshot to the CarPlay Now Playing screen so it
