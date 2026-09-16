@@ -133,6 +133,11 @@ public final class AlertEngine: ObservableObject, AlertEngineProtocol {
         stopCurrentToneImmediately()
         HapticAlertManager.shared.stopSpeedingPulse()
         BackgroundHapticBridge.shared.reset()
+        // Release the alert audio lease, not just the tone: without this the
+        // session stays active for the whole snooze window and the interrupted
+        // media app (Music/YouTube/CarPlay audio) never resumes — the driver
+        // hears silence where their podcast should be after tapping "I Know".
+        endAlertAudioFocus()
         snoozedUntil = Date().addingTimeInterval(seconds)
         DebugLogger.shared.log("AlertEngine: snoozed for \(Int(seconds))s")
         
@@ -254,7 +259,10 @@ public final class AlertEngine: ObservableObject, AlertEngineProtocol {
         // Keep media interrupted for the whole speeding episode. The user
         // must not miss the next warning while the car remains over the
         // limit; focus is released only when status returns to safe/warning.
-        if isAudioAlertsEnabled {
+        // Snoozed drivers asked for exactly the opposite: silence means
+        // silence, so don't grab the audio lease (the 1 s timer below will
+        // acquire it the moment the snooze window expires).
+        if isAudioAlertsEnabled && !isSnoozed {
             beginAlertAudioFocus()
         }
 
@@ -263,6 +271,7 @@ public final class AlertEngine: ObservableObject, AlertEngineProtocol {
         // This second guard protects against a stale status transition or a
         // future caller accidentally starting monitoring with limit == 0.
         if isHapticAlertsEnabled,
+           !isSnoozed,
            let engine = speedEngine,
            engine.isLimitResolved,
            engine.limit > 0,
@@ -276,7 +285,7 @@ public final class AlertEngine: ObservableObject, AlertEngineProtocol {
         // A valid over-limit transition should produce an audible cue now;
         // the timer below supplies the sustained reminders.
         consecutiveSeconds = 1
-        audioAlertActive = isAudioAlertsEnabled
+        audioAlertActive = isAudioAlertsEnabled && !isSnoozed
         if !isSnoozed {
             lastBeepTime = Date()
             triggerAlert()
@@ -302,7 +311,10 @@ public final class AlertEngine: ObservableObject, AlertEngineProtocol {
                 // Reconcile audio focus when the setting changes during an
                 // overspeed episode: disabling audio must restore media now,
                 // while enabling it must acquire focus before the next tone.
-                if self.isAudioAlertsEnabled {
+                // Snooze participates in the same reconciliation — a snooze
+                // started mid-episode releases the lease here, and focus is
+                // re-acquired on the first tick after the window expires.
+                if self.isAudioAlertsEnabled && !self.isSnoozed {
                     self.beginAlertAudioFocus()
                 } else {
                     self.endAlertAudioFocus()
@@ -338,7 +350,9 @@ public final class AlertEngine: ObservableObject, AlertEngineProtocol {
                 }
 
                 if self.consecutiveSeconds >= 1 {
-                    self.audioAlertActive = self.isAudioAlertsEnabled
+                    // Snoozed drivers hear no tone, so the published
+                    // "tone active" flag must stay down during the window.
+                    self.audioAlertActive = self.isAudioAlertsEnabled && !self.isSnoozed
 
                     let now = Date()
                     if now.timeIntervalSince(self.lastBeepTime) >= 2.0 {
@@ -365,7 +379,17 @@ public final class AlertEngine: ObservableObject, AlertEngineProtocol {
         consecutiveSeconds = 0
         audioAlertActive = false
         timerCancellable = nil
-        cancelSnooze()
+        // NOTE: deliberately NOT cancelling the snooze here. This method runs
+        // on every transient status/limit wobble — most importantly the speed-
+        // limit refresh cycle (SpeedEngine sets limit = 0, isLimitResolved =
+        // false and status = .safe while it looks up the next value, roughly
+        // every 80 m surface / 250 m highway). Cancelling here erased the
+        // driver's "I Know (15s)" acknowledgement seconds after every tap,
+        // resurrecting the overspeed banner and beeps while still speeding
+        // (TestFlight: "It's hiding the prompt but shows it back within 3
+        // seconds"). The snooze is a user decision that must outlive
+        // monitoring teardown; it only ends by time expiry, the stopped-car
+        // auto-expire monitor, or an explicit cancellation.
         
         // ── Stop the sustained speeding vibration ─────────────────
         // User is back inside the limit (or alerts fully disabled):

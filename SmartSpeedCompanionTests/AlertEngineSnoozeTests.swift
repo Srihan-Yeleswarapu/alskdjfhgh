@@ -49,4 +49,66 @@ final class AlertEngineSnoozeTests: XCTestCase {
         XCTAssertFalse(engine.isSnoozed)
         XCTAssertEqual(engine.snoozeRemainingSeconds, 0)
     }
+
+    // MARK: - Snooze survives monitoring teardown
+    //
+    // Root cause of the repeat reports after the b640 fix:
+    // `stopMonitoringState()` called `cancelSnooze()`, and it runs on every
+    // transient status wobble — most importantly SpeedEngine's limit-refresh
+    // cycle, which resets `limit = 0` / `status = .safe` while it looks up
+    // the next value (every ~80 m surface / ~250 m highway). That erased the
+    // driver's "I Know" acknowledgement seconds after every tap, so the
+    // banner and beeps returned while still speeding.
+
+    /// The snooze must outlive monitoring teardown; only time expiry, the
+    /// stopped-car auto-expire monitor, or an explicit `cancelSnooze()` may
+    /// end it.
+    func testSnoozeSurvivesMonitoringTeardown() throws {
+        let source = try String(contentsOfFile: alertEngineSourcePath(), encoding: .utf8)
+        let body = try sourceSection(in: source, anchor: "private func stopMonitoringState()")
+        XCTAssertFalse(
+            body.contains("cancelSnooze()"),
+            "stopMonitoringState runs on every transient status/limit wobble; cancelling the snooze there erases the 'I Know' acknowledgement mid-window."
+        )
+    }
+
+    /// Tapping "I Know" must release the alert audio lease (media resumes)
+    /// and a snoozed episode must not re-acquire focus or restart the
+    /// vibration pulse while the window is active.
+    func testSnoozeReleasesAudioFocusAndSuppressesPulseRestart() throws {
+        let source = try String(contentsOfFile: alertEngineSourcePath(), encoding: .utf8)
+        let snoozeBody = try sourceSection(in: source, anchor: "public func snoozeFor(")
+        XCTAssertTrue(
+            snoozeBody.contains("endAlertAudioFocus()"),
+            "snoozeFor must release the alert audio lease so interrupted media resumes during the window."
+        )
+        let startBody = try sourceSection(in: source, anchor: "private func startMonitoring()")
+        XCTAssertTrue(
+            startBody.contains("!isSnoozed"),
+            "startMonitoring must not re-acquire audio focus or restart the haptic pulse while snoozed."
+        )
+    }
+
+    // MARK: - Helpers
+
+    private func sourceSection(in source: String, anchor: String) throws -> String {
+        guard let anchorRange = source.range(of: anchor) else {
+            XCTFail("Missing expected source anchor: \(anchor)")
+            return ""
+        }
+        let body = source[anchorRange.lowerBound...]
+        guard let endRange = body.range(of: "\n    }") else {
+            XCTFail("Could not locate the end of the section for anchor: \(anchor)")
+            return ""
+        }
+        return String(body[..<endRange.lowerBound])
+    }
+
+    private func alertEngineSourcePath() -> String {
+        #if os(Windows)
+        return "SmartSpeedCompanion\\Core\\AlertEngine.swift"
+        #else
+        return "SmartSpeedCompanion/Core/AlertEngine.swift"
+        #endif
+    }
 }

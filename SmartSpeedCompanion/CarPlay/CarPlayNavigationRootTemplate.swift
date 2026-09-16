@@ -491,7 +491,13 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
     private func updateMapButtons() {
         let showSnooze = viewModel.status == .over && !viewModel.alertEngine.isSnoozed
         if showSnooze && !wasSnoozeVisible {
-            var b = mapTemplate.mapButtons; b.append(snoozeButton); mapTemplate.mapButtons = b
+            // Insert at the FRONT, not append: head units render only the
+            // first handful of map buttons, so an appended snooze button
+            // (8th of 8) never appeared on screen — drivers tapping where it
+            // should be hit nothing (the other half of the "I Know doesn't
+            // work" reports). Front placement guarantees visibility during
+            // the overspeed window it exists for.
+            var b = mapTemplate.mapButtons; b.insert(snoozeButton, at: 0); mapTemplate.mapButtons = b
             wasSnoozeVisible = true
         } else if !showSnooze && wasSnoozeVisible {
             var b = mapTemplate.mapButtons; b.removeAll { $0 === snoozeButton }; mapTemplate.mapButtons = b
