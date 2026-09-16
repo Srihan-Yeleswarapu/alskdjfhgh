@@ -265,14 +265,15 @@ struct SpeedAppShortcutsProvider: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         // ═══ 1. Set Destination — the Apple Maps fallthrough fix ═══
         // Entity parameters are legal in phrases. Variants cover the natural
-        // prepositions ("in/through/using/with/via Speedio"); phrase matching
-        // is normalized for case and punctuation, so "set destination to X
-        // in Speedio", "navigate to X through Speedio", "directions to X
+        // prepositions ("in/through/from/using/with/via Speedio"); phrase
+        // matching is normalized for case and punctuation, so "set destination
+        // to X in Speedio", "navigate to X through Speedio", "directions to X
         // using Speedio" all land on the same intent.
         AppShortcut(
             intent: NavigateToDestinationIntent(),
             phrases: [
                 "Set destination to \(\.$destination) in \(.applicationName)",
+                "Set destination to \(\.$destination) from \(.applicationName)",
                 "Set destination to \(\.$destination) through \(.applicationName)",
                 "Set destination to \(\.$destination) using \(.applicationName)",
                 "Set destination to \(\.$destination) with \(.applicationName)",

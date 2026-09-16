@@ -78,7 +78,7 @@ final class SiriDestinationCommandsTests: XCTestCase {
     func testDestinationPhrasesCoverPrepositionVariants() throws {
         let source = try String(contentsOfFile: intentsSourcePath(), encoding: .utf8)
         let providerBody = try sourceSection(in: source, anchor: "struct SpeedAppShortcutsProvider")
-        for variant in ["in \\(.applicationName)", "through \\(.applicationName)", "using \\(.applicationName)", "with \\(.applicationName)", "via \\(.applicationName)"] {
+        for variant in ["in \\(.applicationName)", "through \\(.applicationName)", "from \\(.applicationName)", "using \\(.applicationName)", "with \\(.applicationName)", "via \\(.applicationName)"] {
             XCTAssertTrue(
                 providerBody.contains(variant),
                 "Destination phrases must cover the '\(variant)' preposition variant."
