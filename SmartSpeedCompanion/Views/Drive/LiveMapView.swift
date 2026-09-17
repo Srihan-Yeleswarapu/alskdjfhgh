@@ -109,30 +109,23 @@ public struct LiveMapView: UIViewRepresentable {
     /// Swap the active MKMapConfiguration to match the user's MapStyleChoice.
     /// Called on `makeUIView` and whenever `viewModel.mapStyleRaw` changes.
     private func applyMapStyle(_ style: DriveViewModel.MapStyleChoice, to map: MKMapView) {
-        if #available(iOS 17.0, *) {
-            switch style {
-            case .mutedDark:
-                let cfg = MKStandardMapConfiguration(elevationStyle: .realistic, emphasisStyle: .muted)
-                cfg.showsTraffic = true
-                map.preferredConfiguration = cfg
-            case .standard:
-                let cfg = MKStandardMapConfiguration(elevationStyle: .flat, emphasisStyle: .default)
-                cfg.showsTraffic = true
-                map.preferredConfiguration = cfg
-            case .satellite:
-                let cfg = MKImageryMapConfiguration(elevationStyle: .realistic)
-                map.preferredConfiguration = cfg
-            case .hybridFlyover:
-                let cfg = MKHybridMapConfiguration(elevationStyle: .realistic)
-                map.preferredConfiguration = cfg
-            }
-        } else if #available(iOS 16.0, *) {
-            // iOS 16 fallback (we deploy 18+ but keep guard for safety).
+        // MKMapConfiguration APIs are iOS 16+ and the deployment target is
+        // 18.4, so no availability check is needed here.
+        switch style {
+        case .mutedDark:
             let cfg = MKStandardMapConfiguration(elevationStyle: .realistic, emphasisStyle: .muted)
             cfg.showsTraffic = true
             map.preferredConfiguration = cfg
-        } else {
-            map.mapType = (style == .satellite || style == .hybridFlyover) ? .satellite : .mutedStandard
+        case .standard:
+            let cfg = MKStandardMapConfiguration(elevationStyle: .flat, emphasisStyle: .default)
+            cfg.showsTraffic = true
+            map.preferredConfiguration = cfg
+        case .satellite:
+            let cfg = MKImageryMapConfiguration(elevationStyle: .realistic)
+            map.preferredConfiguration = cfg
+        case .hybridFlyover:
+            let cfg = MKHybridMapConfiguration(elevationStyle: .realistic)
+            map.preferredConfiguration = cfg
         }
     }
 

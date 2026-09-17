@@ -566,7 +566,7 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
             Task { @MainActor in
                 guard let self else { return }
                 self.isAlertPresented = false
-                self.mapTemplate.dismissNavigationAlert(animated: true, completion: { _ in })
+                await self.mapTemplate.dismissNavigationAlert(animated: true)
             }
         }
         let snooze = CPAlertAction(title: "I Know (15s)", style: .default) { [weak self] _ in
@@ -574,7 +574,7 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
                 guard let self else { return }
                 self.viewModel.alertEngine.snoozeFor(15)
                 self.isAlertPresented = false
-                self.mapTemplate.dismissNavigationAlert(animated: true, completion: { _ in })
+                await self.mapTemplate.dismissNavigationAlert(animated: true)
             }
         }
         let alert = CPNavigationAlert(
@@ -1351,31 +1351,10 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
         }
     }
 
-    /// Single-finger pan on head units that deliver begin/update/end
-    /// instead of cumulative translation updates.
-    /// `@MainActor` matches the `CPMapTemplateDelegate` requirement (the
-    /// newer pan-begin/end callbacks are MainActor-isolated in the SDK);
-    /// CarPlay always dispatches these on the main thread.
-    @MainActor
-    func mapTemplate(_ mapTemplate: CPMapTemplate, panBeganWith location: CGPoint) {
-        Task { @MainActor in
-            self.mapController?.panGestureBegan(at: location)
-        }
-    }
-
     nonisolated func mapTemplate(_ mapTemplate: CPMapTemplate, panWith direction: CPMapTemplate.PanDirection) {
         Task { @MainActor in
             // The panning chrome's directional arrows.
             self.mapController?.pan(in: direction)
-        }
-    }
-
-    /// End of a single-finger pan on head units that deliver begin/update/end.
-    /// `@MainActor` matches the `CPMapTemplateDelegate` requirement.
-    @MainActor
-    func mapTemplate(_ mapTemplate: CPMapTemplate, panEndedWith location: CGPoint) {
-        Task { @MainActor in
-            self.mapController?.panGestureEnded()
         }
     }
 
@@ -1465,6 +1444,32 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
             guard !self.navigationManager.isIdleStopEchoGuardActive(),
                   !self.viewModel.isNavigating else { return }
             self.navigationManager.beginSessionWithoutNavigation()
+        }
+    }
+}
+
+// MARK: - Pan Delegate (extension workaround)
+
+/// The pan begin/end optional requirements of `CPMapTemplateDelegate`
+/// near-match any `(CPMapTemplate, CGPoint) -> Void` member declared in this
+/// @MainActor class body, because the requirement's nonisolated signature can
+/// never match an implicitly MainActor-isolated method. Declaring the methods
+/// in an extension silences the 'nearly matches' warning; the selectors
+/// CarPlay dispatches are unchanged.
+extension CarPlayNavigationRootTemplate {
+
+    /// Single-finger pan begin on head units that deliver begin/update/end
+    /// instead of cumulative translation updates.
+    nonisolated func mapTemplate(_ mapTemplate: CPMapTemplate, panBeganWith location: CGPoint) {
+        Task { @MainActor in
+            self.mapController?.panGestureBegan(at: location)
+        }
+    }
+
+    /// End of a single-finger pan.
+    nonisolated func mapTemplate(_ mapTemplate: CPMapTemplate, panEndedWith location: CGPoint) {
+        Task { @MainActor in
+            self.mapController?.panGestureEnded()
         }
     }
 }
