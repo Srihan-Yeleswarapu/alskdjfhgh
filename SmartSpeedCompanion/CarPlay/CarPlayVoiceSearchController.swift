@@ -168,7 +168,7 @@ final class CarPlayVoiceSearchController {
                 return
             }
 
-            let transcriber = try SpeechTranscriber(locale: resolved, preset: .progressiveTranscription)
+            let transcriber = SpeechTranscriber(locale: resolved, preset: .progressiveTranscription)
             let analyzer = SpeechAnalyzer(modules: [transcriber])
             self.analyzerHandle = analyzer
 
@@ -177,7 +177,7 @@ final class CarPlayVoiceSearchController {
             let installed = await SpeechTranscriber.installedLocales
             let bcp47 = resolved.identifier(.bcp47)
             if !installed.contains(where: { $0.identifier(.bcp47) == bcp47 }) {
-                if let request = await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
+                if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
                     try await request.downloadAndInstall()
                 }
             }
