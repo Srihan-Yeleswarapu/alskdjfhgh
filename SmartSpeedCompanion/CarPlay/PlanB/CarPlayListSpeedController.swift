@@ -262,29 +262,25 @@ class CarPlayListSpeedController {
 
         // ── Speed item (hero display) ─────────────────────────────
         let speedInt = Int(speed)
-        speedItem.setText("\\(speedInt)")
+        speedItem.setText("\(speedInt)")
         speedItem.setDetailText(unitShort)
         speedItem.setImage(Self.statusCircleImage(color: circleColor, size: 40))
 
         // ── Status item ───────────────────────────────────────────
         let statusLabel: String
-        let statusPrefix: String
         switch status {
         case .over:
             statusLabel = "⚠ OVERSPEED"
-            statusPrefix = "⚠ "
         case .warning:
             statusLabel = "⚠ WARNING"
-            statusPrefix = "⚠ "
         case .safe:
             statusLabel = "✔ SAFE"
-            statusPrefix = "✔ "
         }
         statusItem.setDetailText(statusLabel)
 
         // ── Limit item ────────────────────────────────────────────
         if limit > 0 {
-            limitItem.setDetailText("\\(displayLimit) \\(unitShort)")
+            limitItem.setDetailText("\(displayLimit) \(unitShort)")
         } else {
             limitItem.setDetailText("--")
         }
@@ -309,8 +305,8 @@ class CarPlayListSpeedController {
         if isRecording && driveInfoSection == nil {
             // Insert the drive-info section after the session section (index 1)
             let mins = Int(duration / 60)
-            durationItem.setDetailText("\\(mins) min")
-            topSpeedItem.setDetailText("\\(Int(sessionTopSpeed)) \\(unitShort)")
+            durationItem.setDetailText("\(mins) min")
+            topSpeedItem.setDetailText("\(Int(sessionTopSpeed)) \(unitShort)")
 
             let section = CPListSection(
                 items: [durationItem, topSpeedItem],
@@ -330,8 +326,8 @@ class CarPlayListSpeedController {
         } else if isRecording && driveInfoSection != nil {
             // Update existing drive-info items
             let mins = Int(duration / 60)
-            durationItem.setDetailText("\\(mins) min")
-            topSpeedItem.setDetailText("\\(Int(sessionTopSpeed)) \\(unitShort)")
+            durationItem.setDetailText("\(mins) min")
+            topSpeedItem.setDetailText("\(Int(sessionTopSpeed)) \(unitShort)")
 
         } else if !isRecording && driveInfoSection != nil {
             // Remove the drive-info section
@@ -374,8 +370,8 @@ class CarPlayListSpeedController {
         let unitShort = SpeedFormatting.unitLabelShort(measurementSystem: system)
 
         let items = [
-            CPInformationItem(title: "Current Speed", detail: "\\(Int(viewModel.speed)) \\(unitShort)"),
-            CPInformationItem(title: "Drive Time", detail: "\\(Int(viewModel.sessionDuration / 60)) min"),
+            CPInformationItem(title: "Current Speed", detail: "\(Int(viewModel.speed)) \(unitShort)"),
+            CPInformationItem(title: "Drive Time", detail: "\(Int(viewModel.sessionDuration / 60)) min"),
             CPInformationItem(
                 title: "Status",
                 detail: viewModel.status.rawValue.uppercased()

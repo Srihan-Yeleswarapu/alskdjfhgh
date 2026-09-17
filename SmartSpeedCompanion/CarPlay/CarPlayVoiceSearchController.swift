@@ -16,6 +16,10 @@
 // SFSpeechRecognizer fallback is needed.
 
 import AVFoundation
+// AVAudioPCMBuffer isn't yet annotated Sendable; the conversion tap only
+// hands it to the analyzer on the same queue, so the @preconcurrency import
+// silences the '@Sendable' capture warning.
+@preconcurrency import AVFAudio
 import CarPlay
 import QuartzCore
 import Speech
@@ -91,7 +95,6 @@ final class CarPlayVoiceSearchController {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: UInt64(self.micStartDelay * 1_000_000_000))
             guard self.interfaceController != nil else { return } // cancelled meanwhile
-            guard #available(iOS 26.0, *) else { return }
             await self.startAudioPipeline()
         }
     }
@@ -174,7 +177,7 @@ final class CarPlayVoiceSearchController {
             let installed = await SpeechTranscriber.installedLocales
             let bcp47 = resolved.identifier(.bcp47)
             if !installed.contains(where: { $0.identifier(.bcp47) == bcp47 }) {
-                if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
+                if let request = await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
                     try await request.downloadAndInstall()
                 }
             }
@@ -291,7 +294,7 @@ final class CarPlayVoiceSearchController {
         teardownAudio()
         Task { @MainActor in
             if #available(iOS 26.0, *), let analyzer = self.analyzerHandle as? SpeechAnalyzer {
-                try? await analyzer.cancelAndFinishNow()
+                await analyzer.cancelAndFinishNow()
             }
             self.interfaceController?.dismissTemplate(animated: true, completion: nil)
             self.resetState()

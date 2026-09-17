@@ -59,7 +59,7 @@ public struct DriveRootView: View {
             driveViewModel.loadOfflineRegions()
             driveViewModel.loadNamedLocations(context: modelContext)
             // Check for an interrupted session from a previous launch
-            driveViewModel.checkForInterruptedSession()
+            _ = driveViewModel.checkForInterruptedSession()
         }
         .alert("Short Drive Detected", isPresented: $driveViewModel.showShortSessionPrompt) {
             Button("Keep", role: .cancel) {

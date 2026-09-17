@@ -27,7 +27,10 @@
 
 import Foundation
 import UIKit
-import UserNotifications
+// UNUserNotificationCenter isn't yet annotated Sendable; its callbacks hop
+// to arbitrary queues by design, so the @preconcurrency import silences the
+// '@Sendable' capture warning on `center`.
+@preconcurrency import UserNotifications
 import CarPlay
 
 @MainActor

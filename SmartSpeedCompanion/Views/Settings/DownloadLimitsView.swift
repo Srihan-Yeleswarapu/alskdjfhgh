@@ -89,7 +89,7 @@ public struct DownloadLimitsView: View {
                     .font(DesignSystem.labelFont)
                     .foregroundColor(DesignSystem.cyan)
                 Spacer()
-                Text("\\(Int(radiusMiles.rounded())) mi")
+                Text("\(Int(radiusMiles.rounded())) mi")
                     .font(.system(size: 30, weight: .black, design: .rounded))
                     .foregroundColor(.white)
                     .contentTransition(.numericText())
@@ -102,14 +102,14 @@ public struct DownloadLimitsView: View {
                 }
 
             HStack {
-                Text("\\(Int(minMiles)) mi")
+                Text("\(Int(minMiles)) mi")
                     .font(.caption2.bold())
                     .foregroundColor(.white.opacity(0.4))
                 Spacer()
                 Text("MAX")
                     .font(.caption2.bold())
                     .foregroundColor(DesignSystem.amber)
-                Text("\\(Int(maxMiles)) mi")
+                Text("\(Int(maxMiles)) mi")
                     .font(.caption2.bold())
                     .foregroundColor(.white.opacity(0.4))
             }
@@ -171,7 +171,7 @@ public struct DownloadLimitsView: View {
                 VStack(spacing: 8) {
                     ProgressView(value: driveViewModel.limitsDownloadProgress)
                         .tint(DesignSystem.cyan)
-                    Text("Downloading… \\(Int(driveViewModel.limitsDownloadProgress * 100))%")
+                    Text("Downloading… \(Int(driveViewModel.limitsDownloadProgress * 100))%")
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(.white.opacity(0.7))
                 }
@@ -291,6 +291,6 @@ public struct DownloadLimitsView: View {
 
     private func formatCount(_ count: Int) -> String {
         if count >= 1000 { return String(format: "%.1fk", Double(count) / 1000) }
-        return "\\(count)"
+        return "\(count)"
     }
 }

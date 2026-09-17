@@ -139,11 +139,13 @@ public class CarPlayNavigationManager: NSObject, NavigationActionDelegate {
 
     /// Defensive cleanup in case `finishCurrentSession()` was not called
     /// before deallocation (crash path, unexpected teardown order).
+    /// Uses `invalidate()` — not `finishTrip()` — because it is nonisolated
+    /// and therefore safe to call from deinit's nonisolated context.
     deinit {
         estimateCancellable?.cancel()
         idleStateCancellable?.cancel()
-        idleSession?.finishTrip()
-        navigationSession?.finishTrip()
+        idleSession?.invalidate()
+        navigationSession?.invalidate()
     }
 
     // MARK: - Session Without Navigation

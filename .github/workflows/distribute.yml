@@ -661,12 +661,12 @@ jobs:
           echo
           echo "=== Post-re-sign: signed entitlements (XML, clean stdout) ==="
           echo "[DBG-ENTS] --- host: $HOST_BIN_NAME ---"
-          codesign -d --entitlements :- "$APP_BUNDLE/$HOST_BIN_NAME" 2>&1 || true
+          codesign -d --entitlements - "$APP_BUNDLE/$HOST_BIN_NAME" 2>&1 || true
           for APPEX in "$APP_BUNDLE/PlugIns"/*.appex; do
             [ -d "$APPEX" ] || continue
             APPEX_NAME="$(basename "$APPEX" .appex)"
             echo "[DBG-ENTS] --- inner: $APPEX_NAME ---"
-            codesign -d --entitlements :- "$APPEX/$APPEX_NAME" 2>&1 || true
+            codesign -d --entitlements - "$APPEX/$APPEX_NAME" 2>&1 || true
           done
 
           # Repackage via `ditto -c -k --keepParent --sequesterRsrcAndKeepParent`,

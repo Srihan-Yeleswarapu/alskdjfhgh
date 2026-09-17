@@ -1495,7 +1495,6 @@ public final class NavigationCoordinator: ObservableObject {
 
         // 1. OFF-ROUTE DETECTION: Check if we are too far from the polyline
         let routeMatch = matchRoute(location, route: route)
-        let nearestPoint = routeMatch.coordinate
         let distanceToRoute = routeMatch.distanceFromRoute
 
         if distanceToRoute > offRouteThreshold { // Trigger promptly once a moving fix is clearly off the route

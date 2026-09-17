@@ -682,7 +682,7 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
     @MainActor
     private func presentVoiceSearch() {
         guard voiceSearchController == nil else { return } // already listening
-        guard let interfaceController else { return }
+        guard interfaceController != nil else { return }
 
         let micStatus = AVAudioApplication.shared.recordPermission
         switch micStatus {
@@ -1353,7 +1353,11 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
 
     /// Single-finger pan on head units that deliver begin/update/end
     /// instead of cumulative translation updates.
-    nonisolated func mapTemplate(_ mapTemplate: CPMapTemplate, panBeganWith location: CGPoint) {
+    /// `@MainActor` matches the `CPMapTemplateDelegate` requirement (the
+    /// newer pan-begin/end callbacks are MainActor-isolated in the SDK);
+    /// CarPlay always dispatches these on the main thread.
+    @MainActor
+    func mapTemplate(_ mapTemplate: CPMapTemplate, panBeganWith location: CGPoint) {
         Task { @MainActor in
             self.mapController?.panGestureBegan(at: location)
         }
@@ -1366,7 +1370,10 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
         }
     }
 
-    nonisolated func mapTemplate(_ mapTemplate: CPMapTemplate, panEndedWith location: CGPoint) {
+    /// End of a single-finger pan on head units that deliver begin/update/end.
+    /// `@MainActor` matches the `CPMapTemplateDelegate` requirement.
+    @MainActor
+    func mapTemplate(_ mapTemplate: CPMapTemplate, panEndedWith location: CGPoint) {
         Task { @MainActor in
             self.mapController?.panGestureEnded()
         }

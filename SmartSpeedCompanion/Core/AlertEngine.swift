@@ -3,6 +3,11 @@
 import Foundation
 import Combine
 import AVFoundation
+// AVFAudio's engine/node types aren't yet annotated Sendable; they are used
+// here only on the dedicated audio preparation queue, so the @preconcurrency
+// import silences the '@Sendable' capture warnings without weakening our
+// own annotations.
+@preconcurrency import AVFAudio
 import AudioToolbox
 
 @MainActor

@@ -192,7 +192,7 @@ struct GetTodayDriveSummaryIntent: AppIntent {
         let context = AppDelegate.sharedModelContainer.mainContext
         let startOfDay = Calendar.current.startOfDay(for: Date())
 
-        var fetch = FetchDescriptor<DriveSession>(
+        let fetch = FetchDescriptor<DriveSession>(
             predicate: #Predicate<DriveSession> { $0.startTime >= startOfDay },
             sortBy: [SortDescriptor<DriveSession>(\.startTime, order: .reverse)]
         )
