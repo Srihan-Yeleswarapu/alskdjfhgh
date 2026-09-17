@@ -5,8 +5,8 @@ import MapKit
 import ActivityKit
 import UIKit
 import WidgetKit
-import FirebaseAuth
-import FirebaseFirestore
+// [FIREBASE-DISABLED 2026-09-16] import FirebaseAuth
+// [FIREBASE-DISABLED 2026-09-16] import FirebaseFirestore
 
 /// Sendable hand-off from a background SwiftData context. The managed model
 /// instances themselves never cross actors; only their stable IDs do.
@@ -725,11 +725,12 @@ public final class DriveViewModel: NSObject, ObservableObject {
     /// every GPS fix and frequent updates add heat on a real device.
     private var lastLiveActivityUpdateAt: Date = .distantPast
     private let liveActivityUpdateInterval: TimeInterval = 2.0
-    /// The cloud profile only needs a coarse last-known position. Writing a
-    /// Firestore document on every GPS heartbeat caused unnecessary radio,
-    /// serialization, and server work during a drive.
-    private var lastCloudLocationSyncAt: Date = .distantPast
-    private let cloudLocationSyncInterval: TimeInterval = 10.0
+    // [FIREBASE-DISABLED 2026-09-16] Cloud position-sync throttle state parked
+    // with Firebase. The cloud profile only needed a coarse last-known position;
+    // writing a Firestore document on every GPS heartbeat caused unnecessary
+    // radio, serialization, and server work during a drive.
+    // private var lastCloudLocationSyncAt: Date = .distantPast
+    // private let cloudLocationSyncInterval: TimeInterval = 10.0
     private var cancellables = Set<AnyCancellable>()
     
     // A weak reference or delegate will handle actual logic in CarPlay layer
@@ -1013,15 +1014,18 @@ public final class DriveViewModel: NSObject, ObservableObject {
                 // features, but only at a coarse cadence. A Firestore write for
                 // every 500 ms GPS heartbeat was a major avoidable source of
                 // radio/CPU work and phone heat.
-                let cloudNow = Date()
-                if self.isRecording,
-                   cloudNow.timeIntervalSince(self.lastCloudLocationSyncAt) >= self.cloudLocationSyncInterval {
-                    self.lastCloudLocationSyncAt = cloudNow
-                    AuthenticationManager.shared.updateLastLocation(
-                        latitude: location.coordinate.latitude,
-                        longitude: location.coordinate.longitude
-                    )
-                }
+                // [FIREBASE-DISABLED 2026-09-16] Cloud position sync parked with
+                // Firebase (see AuthenticationManager.swift banner). The no-op
+                // stub made this dead throttling bookkeeping on every GPS fix.
+                // let cloudNow = Date()
+                // if self.isRecording,
+                //    cloudNow.timeIntervalSince(self.lastCloudLocationSyncAt) >= self.cloudLocationSyncInterval {
+                //     self.lastCloudLocationSyncAt = cloudNow
+                //     AuthenticationManager.shared.updateLastLocation(
+                //         latitude: location.coordinate.latitude,
+                //         longitude: location.coordinate.longitude
+                //     )
+                // }
                 // Heading-delta trigger is only useful while following a route;
                 // do not create a task for every GPS fix during a recording-only
                 // drive.
@@ -1149,7 +1153,7 @@ public final class DriveViewModel: NSObject, ObservableObject {
         
         sessionStartTime = Date()
         lastLiveActivityUpdateAt = .distantPast
-        lastCloudLocationSyncAt = .distantPast
+        // [FIREBASE-DISABLED 2026-09-16] lastCloudLocationSyncAt = .distantPast
         sessionTimer = Timer.publish(every: 1, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
@@ -1414,7 +1418,7 @@ public final class DriveViewModel: NSObject, ObservableObject {
                 self.showShortSessionPrompt = true
             } else {
                 sessionRecorder.saveSession(session)
-                AuthenticationManager.shared.syncDriveSession(session)
+                // [FIREBASE-DISABLED 2026-09-16] AuthenticationManager.shared.syncDriveSession(session)
             }
         }
         
@@ -1461,7 +1465,7 @@ public final class DriveViewModel: NSObject, ObservableObject {
     public func saveLastSession() {
         if let session = self.lastSessionToPotentialDelete {
             self.sessionRecorder.saveSession(session)
-            AuthenticationManager.shared.syncDriveSession(session)
+            // [FIREBASE-DISABLED 2026-09-16] AuthenticationManager.shared.syncDriveSession(session)
             self.lastSessionToPotentialDelete = nil
         }
     }

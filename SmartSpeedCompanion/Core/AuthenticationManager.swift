@@ -1,10 +1,39 @@
 import Foundation
+import Combine // ObservableObject / @Published (previously re-exported by the Firebase modules)
 import AuthenticationServices
-import FirebaseAuth
-import FirebaseFirestore
-import FirebaseCore
+// [FIREBASE-DISABLED 2026-09-16] import FirebaseAuth
+// [FIREBASE-DISABLED 2026-09-16] import FirebaseFirestore
+// [FIREBASE-DISABLED 2026-09-16] import FirebaseCore
 import SwiftData
 import UIKit // For device info if needed
+
+// ═══════════════════════════════════════════════════════════════════════════
+// [FIREBASE-DISABLED 2026-09-16] Firebase (Auth + Firestore) is parked.
+//
+// Accounts have been hidden from users since TestFlight 2.1.4 (see the
+// ACCOUNT-section note in SettingsView.swift and the banner in AppRootView.swift);
+// nothing calls signUp/signIn/signInWithApple/deleteAccount in the shipping app.
+// The Firebase SDK was dropped from the build (package + product dependencies in
+// project.yml are commented out) to speed up resolution and builds.
+//
+// The real Firebase-backed implementation below is kept verbatim inside
+// `#if canImport(FirebaseAuth)`. Because the package is no longer linked,
+// canImport is false and the compiling `#else` stub at the bottom of this file
+// is used instead — it keeps AppState / AppRootView / DriveViewModel call sites
+// compiling with auth permanently "signed out" and zero network calls.
+//
+// To restore:
+//   1. Uncomment the `Firebase:` package + the four product dependencies and
+//      the GoogleService-Info.plist resource in project.yml, then regenerate.
+//   2. Restore the GoogleService-Info.plist decode step in
+//      .github/workflows/build.yml.
+//   3. Uncomment `import FirebaseCore` + `configureFirebase()` in
+//      AppDelegate.swift and the import in SmartSpeedCompanionApp.swift.
+//   4. In AppState.swift, re-enable the `setupSettingsSync()` call + body and
+//      the `.userDidSignUp` observer (both marked FIREBASE-DISABLED).
+//   5. The `#if canImport(FirebaseAuth)` gate below makes the rest automatic.
+// ═══════════════════════════════════════════════════════════════════════════
+#if canImport(FirebaseAuth)
 
 public class AuthenticationManager: ObservableObject {
     public static let shared = AuthenticationManager()
@@ -592,3 +621,50 @@ public enum AuthError: LocalizedError, Sendable {
         }
     }
 }
+
+#else
+
+// [FIREBASE-DISABLED 2026-09-16] Offline stub — used while the Firebase package
+// is unlinked. Only the members that still have call sites are provided; the
+// full API lives inside the `#if canImport(FirebaseAuth)` branch above.
+
+public class AuthenticationManager: ObservableObject {
+    public static let shared = AuthenticationManager()
+
+    @Published public var isAuthenticated: Bool = false
+    @Published public var currentUserEmail: String?
+    /// Always true in the stub so AppRootView skips the "Initializing..." gate.
+    @Published public var initialAuthChecked: Bool = true
+
+    public init() {}
+
+    // MARK: - API retained for call sites (no-ops while Firebase is parked)
+
+    public func checkAuthStatus() {}
+    public func signOut() {}
+    public func syncDriveSession(_ session: DriveSession) {}
+    public func updateLastLocation(latitude: Double, longitude: Double) {}
+    public func syncUserPreferences() {}
+    public func fetchUserPreferences() {}
+
+    public func isValidEmail(_ email: String) -> Bool {
+        let emailRegex = "[A-Z0-9a-z._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,64}"
+        let emailPredicate = NSPredicate(format: "SELF MATCHES %@", emailRegex)
+        return emailPredicate.evaluate(with: email)
+    }
+
+    // `signUp`, `signIn`, `signInWithApple`, `deleteAccount`, `reauthenticate`
+    // and friends are intentionally NOT stubbed — their only callers (the Auth
+    // views) are parked too (see Views/Auth/). Uncommenting them here without
+    // restoring Firebase will fail loudly at compile time, which is what we want.
+}
+
+public enum AuthError: LocalizedError, Sendable {
+    case firebaseNotConfigured
+
+    public var errorDescription: String? {
+        return "Accounts are disabled in this build."
+    }
+}
+
+#endif

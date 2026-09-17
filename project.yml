@@ -13,10 +13,16 @@ options:
   createIntermediateGroups: true
   groupSortPosition: top
 
-packages:
-  Firebase:
-    url: https://github.com/firebase/firebase-ios-sdk.git
-    from: 12.0.0
+# [FIREBASE-DISABLED 2026-09-16] Firebase (Auth / Firestore / Analytics) is
+# parked while accounts are hidden from users (see AuthenticationManager.swift
+# banner). Comment out the package, all product dependencies below, and the
+# GoogleService-Info.plist resource to speed up resolution + build.
+# Firebase:
+#   url: https://github.com/firebase/firebase-ios-sdk.git
+#   from: 12.0.0
+# NOTE: keep `packages` an explicit empty map (not null) while everything
+# here is commented out — XcodeGen decodes it as [String: Package].
+packages: {}
 
 settings:
   base:
@@ -112,8 +118,10 @@ targets:
       # No active code path calls ArizonaSpeedLimitService today.
       # - path: SmartSpeedCompanion/Resources/ArizonaSpeedLimits.sqlite
       #   buildPhase: resources
-      - path: SmartSpeedCompanion/Configuration/GoogleService-Info.plist
-        buildPhase: resources
+      # [FIREBASE-DISABLED 2026-09-16] Not bundled while Firebase is parked;
+      # restore together with the `Firebase:` package block above.
+      # - path: SmartSpeedCompanion/Configuration/GoogleService-Info.plist
+      #   buildPhase: resources
       - path: SmartSpeedCompanion/Configuration/HERE-Config.plist
         buildPhase: resources
         optional: true
@@ -261,14 +269,16 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
 
     dependencies:
-      - package: Firebase
-        product: FirebaseCore
-      - package: Firebase
-        product: FirebaseAuth
-      - package: Firebase
-        product: FirebaseFirestore
-      - package: Firebase
-        product: FirebaseAnalytics
+      # [FIREBASE-DISABLED 2026-09-16] Restore these four products together
+      # with the `Firebase:` package block at the top of this file.
+      # - package: Firebase
+      #   product: FirebaseCore
+      # - package: Firebase
+      #   product: FirebaseAuth
+      # - package: Firebase
+      #   product: FirebaseFirestore
+      # - package: Firebase
+      #   product: FirebaseAnalytics
       # Embed the WidgetKit extension inside the main app bundle so iOS
       # renders the home-screen / lock-screen widgets from the same .ipa.
       # Without this dependency the extension target never lands in the

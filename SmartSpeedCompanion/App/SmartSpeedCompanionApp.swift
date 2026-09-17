@@ -2,7 +2,7 @@ import SwiftUI
 import SwiftData
 import ActivityKit
 import WidgetKit
-import FirebaseCore
+// [FIREBASE-DISABLED 2026-09-16] import FirebaseCore
 
 @main
 struct SpeedioApp: App {

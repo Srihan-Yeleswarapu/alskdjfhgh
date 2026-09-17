@@ -14,16 +14,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Decode Firebase plist (if secret provided)
-        env:
-          FIREBASE_PLIST_B64: ${{ secrets.FIREBASE_PLIST_B64 }}
-        run: |
-          if [ -n "$FIREBASE_PLIST_B64" ]; then
-            echo "$FIREBASE_PLIST_B64" | base64 --decode > SmartSpeedCompanion/Configuration/GoogleService-Info.plist
-            echo "[OK] Firebase plist restored"
-          else
-            echo "[WARN] No Firebase secret set; proceeding without GoogleService-Info.plist"
-          fi
+      # [FIREBASE-DISABLED 2026-09-16] Firebase is parked; the plist is no
+      # longer bundled (see project.yml) and no code reads it. Restore this
+      # step together with the Firebase package block in project.yml.
+      # - name: Decode Firebase plist (if secret provided)
+      #   env:
+      #     FIREBASE_PLIST_B64: ${{ secrets.FIREBASE_PLIST_B64 }}
+      #   run: |
+      #     if [ -n "$FIREBASE_PLIST_B64" ]; then
+      #       echo "$FIREBASE_PLIST_B64" | base64 --decode > SmartSpeedCompanion/Configuration/GoogleService-Info.plist
+      #       echo "[OK] Firebase plist restored"
+      #     else
+      #       echo "[WARN] No Firebase secret set; proceeding without GoogleService-Info.plist"
+      #     fi
 
       - name: Create HERE-Config.plist (from secret)
         env:

@@ -1,3 +1,11 @@
+// [FIREBASE-DISABLED 2026-09-16] Auth entry view parked with Firebase (accounts
+// were already hidden from users since TestFlight 2.1.4 — see AppRootView.swift
+// and SettingsView.swift). The whole file is gated out of the build; restore it
+// together with the Firebase package in project.yml and the real
+// AuthenticationManager (kept inside `#if canImport(FirebaseAuth)` in
+// Core/AuthenticationManager.swift).
+#if canImport(FirebaseAuth)
+
 import SwiftUI
 public struct AuthView: View {
     @State private var isShowingSignUp: Bool
@@ -21,3 +29,5 @@ public struct AuthView: View {
         .preferredColorScheme(.dark)
     }
 }
+
+#endif

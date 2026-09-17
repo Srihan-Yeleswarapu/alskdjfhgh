@@ -52,7 +52,11 @@ public class AppState: ObservableObject {
             .store(in: &cancellables)
 
         // Setup preferences syncing listeners
-        setupSettingsSync()
+        // [FIREBASE-DISABLED 2026-09-16] Cloud preference sync parked with
+        // Firebase (see AuthenticationManager.swift banner). The KVO publisher
+        // only existed to push settings to Firestore; with auth stubbed out it
+        // was dead work on every settings change.
+        // setupSettingsSync()
 
         // Account-creation hook: when `AuthenticationManager` posts
         // `.userDidSignUp` (after a successful email/password sign-up OR
@@ -60,13 +64,16 @@ public class AppState: ObservableObject {
         // Auth account), reset the onboarding funnel so the new account
         // is routed through survey → privacy transition → feature
         // tutorial rather than dropped straight into the Drive tab.
-        NotificationCenter.default.addObserver(
-            forName: .userDidSignUp,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.resetOnboardingFunnel()
-        }
+        //
+        // [FIREBASE-DISABLED 2026-09-16] Nothing posts `.userDidSignUp` while
+        // Firebase is parked, so the observer registration is dead code.
+        // NotificationCenter.default.addObserver(
+        //     forName: .userDidSignUp,
+        //     object: nil,
+        //     queue: .main
+        // ) { [weak self] _ in
+        //     self?.resetOnboardingFunnel()
+        // }
     }
 
     /// Drops the legacy five-boolean funnel and translates it (preserving
@@ -141,6 +148,11 @@ public class AppState: ObservableObject {
     }
 
     private func setupSettingsSync() {
+        // [FIREBASE-DISABLED 2026-09-16] Body parked with Firebase — the KVO
+        // publisher existed only to push settings to Firestore. Restore
+        // together with the Firebase package in project.yml and the real
+        // AuthenticationManager.
+#if false
         // Observe all critical settings keys in UserDefaults and push updates to Firestore
         let settingsKeys = [
             "userBuffer", "audioAlertsEnabled",
@@ -159,6 +171,7 @@ public class AppState: ObservableObject {
                 }
                 .store(in: &cancellables)
         }
+#endif
     }
 }
 

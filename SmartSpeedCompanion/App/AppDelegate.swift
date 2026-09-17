@@ -1,6 +1,6 @@
 import UIKit
 import CarPlay
-import FirebaseCore
+// [FIREBASE-DISABLED 2026-09-16] import FirebaseCore
 import SwiftData
 import Darwin // dlopen/dlclose for framework prewarming
 
@@ -37,7 +37,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
-        configureFirebase()
+        // [FIREBASE-DISABLED 2026-09-16] configureFirebase()
         prewarmFrameworks()
         // [WATCH-DISABLED] Apple Watch integration paused while iOS fixes
         // land. The WCSession bridge below is commented out and its source
@@ -49,14 +49,18 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         return true
     }
 
-    private func configureFirebase() {
-        guard let options = FirebaseOptions(contentsOfFile: Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist") ?? "") else {
-            print("Firebase: GoogleService-Info.plist not found in bundle. Auth will fail.")
-            return
-        }
-        FirebaseApp.configure(options: options)
-        print("Firebase configured successfully.")
-    }
+    // [FIREBASE-DISABLED 2026-09-16] Firebase configuration parked.
+    // Restore together with the `import FirebaseCore` above, the
+    // `Firebase` package block in project.yml, and the Firebase-
+    // enabled AuthenticationManager.
+    // private func configureFirebase() {
+    //     guard let options = FirebaseOptions(contentsOfFile: Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist") ?? "") else {
+    //         print("Firebase: GoogleService-Info.plist not found in bundle. Auth will fail.")
+    //         return
+    //     }
+    //     FirebaseApp.configure(options: options)
+    //     print("Firebase configured successfully.")
+    // }
     
     /// Pre-warm system frameworks that are cold-loaded lazily on first use.
     ///
