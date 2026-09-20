@@ -118,15 +118,15 @@ enum DriveSummaryFormatter {
 /// The intent formats all the metrics into a single, natural-sounding dialog
 /// that Siri speaks back to the user.
 struct GetDriveSessionSummaryIntent: AppIntent {
-    static var title: LocalizedStringResource = "Get Drive Session Summary"
-    static var description = IntentDescription(
+    static let title: LocalizedStringResource = "Get Drive Session Summary"
+    static let description = IntentDescription(
         "Get a detailed summary of a specific drive session." as LocalizedStringResource,
         categoryName: "Driving" as LocalizedStringResource,
         searchKeywords: ["drive", "session", "summary", "score", "speed"]
     )
 
     /// When `true`, Siri can answer without bringing Speedio to the foreground.
-    static var openAppWhenRun: Bool = false
+    static let openAppWhenRun: Bool = false
 
     /// The session to summarise. Resolved by `DriveSessionEntityQuery` from
     /// whatever the user said — e.g. "when I drove to Work".
@@ -146,13 +146,13 @@ struct GetDriveSessionSummaryIntent: AppIntent {
 
 /// Intent that answers "how was my last drive" — no parameter needed.
 struct GetLatestDriveSummaryIntent: AppIntent {
-    static var title: LocalizedStringResource = "Get Latest Drive Summary"
-    static var description = IntentDescription(
+    static let title: LocalizedStringResource = "Get Latest Drive Summary"
+    static let description = IntentDescription(
         "Get a summary of your most recent drive session." as LocalizedStringResource,
         categoryName: "Driving" as LocalizedStringResource,
         searchKeywords: ["last", "latest", "recent", "drive", "summary"]
     )
-    static var openAppWhenRun: Bool = false
+    static let openAppWhenRun: Bool = false
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
@@ -179,13 +179,13 @@ struct GetLatestDriveSummaryIntent: AppIntent {
 
 /// Intent that answers "how was my driving today" — aggregates all today's sessions.
 struct GetTodayDriveSummaryIntent: AppIntent {
-    static var title: LocalizedStringResource = "Get Today's Drive Summary"
-    static var description = IntentDescription(
+    static let title: LocalizedStringResource = "Get Today's Drive Summary"
+    static let description = IntentDescription(
         "Get a summary of all your drives from today." as LocalizedStringResource,
         categoryName: "Driving" as LocalizedStringResource,
         searchKeywords: ["today", "drive", "summary"]
     )
-    static var openAppWhenRun: Bool = false
+    static let openAppWhenRun: Bool = false
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {

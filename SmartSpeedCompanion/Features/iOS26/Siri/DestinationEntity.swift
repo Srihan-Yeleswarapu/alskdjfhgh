@@ -24,8 +24,11 @@ struct DestinationEntity: AppEntity {
         TypeDisplayRepresentation(stringLiteral: "Destination")
     }
 
-    @MainActor
-    static var defaultQuery = DestinationEntityQuery()
+    // Nonisolated `static let` of an implicitly-Sendable query struct:
+    // satisfies AppEntity's nonisolated `defaultQuery` requirement under
+    // Swift 6 (a @MainActor stored static made the conformance cross into
+    // main-actor-isolated code).
+    static let defaultQuery = DestinationEntityQuery()
 
     /// Stable identity. For searched places the coordinates are embedded so
     /// the entity can be rebuilt into an MKMapItem without another network
@@ -68,24 +71,36 @@ struct DestinationEntity: AppEntity {
     /// the phone-side published `searchResults` untouched — Siri resolution
     /// must never disturb what the in-app search UI is showing.
     /// MainActor-isolated because the shared view model is.
+    ///
+    /// Returns `DestinationEntity` (Sendable) rather than `[MKMapItem]`:
+    /// MKMapItem is not Sendable, so returning it to the nonisolated entity
+    /// query would cross the MainActor boundary with shared mutable state.
+    /// Conversion to entities happens *inside* the actor.
     @MainActor
-    static func search(_ query: String) async -> [MKMapItem] {
-        await AppDelegate.sharedDriveViewModel.searchDestination(query: query, publishResults: false)
+    static func search(_ query: String) async -> [DestinationEntity] {
+        let items = await AppDelegate.sharedDriveViewModel.searchDestination(query: query, publishResults: false)
+        return items.map(DestinationEntity.from)
     }
 
     // MARK: MKMapItem resolution
 
     /// Converts this entity back into an MKMapItem for the navigation
     /// pipeline: coordinates first (offline, precise), text search as the
-    /// fallback for recents that never carried coordinates.
+    /// fallback for recents that never carried coordinates. The fallback
+    /// search returns Sendable entities and the MKMapItem is rebuilt locally
+    /// from the winning hit's embedded coordinates.
     func asMapItem() async -> MKMapItem? {
         if let coordinate = Self.coordinate(fromID: id) {
             let item = MKMapItem(placemark: MKPlacemark(coordinate: coordinate))
             item.name = name
             return item
         }
-        let items = await Self.search(name)
-        return items.first
+        let results = await Self.search(name)
+        guard let first = results.first,
+              let coordinate = Self.coordinate(fromID: first.id) else { return nil }
+        let item = MKMapItem(placemark: MKPlacemark(coordinate: coordinate))
+        item.name = first.name
+        return item
     }
 
     /// Parses "lat,lon|…" out of the id. Returns nil for recents-style ids.
@@ -111,8 +126,9 @@ struct DestinationEntityQuery: EntityStringQuery {
     func entities(matching string: String) async throws -> [DestinationEntity] {
         let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return try await suggestedEntities() }
-        let items = await DestinationEntity.search(trimmed)
-        return items.map(DestinationEntity.from)
+        // `search` now returns Sendable entities (converted on the MainActor
+        // inside), so nothing non-Sendable crosses back into this query.
+        return await DestinationEntity.search(trimmed)
     }
 
     // MARK: EntityQuery

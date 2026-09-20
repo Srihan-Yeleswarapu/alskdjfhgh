@@ -3,8 +3,8 @@ import AppIntents
 import Foundation
 
 struct StartDriveSessionIntent: AppIntent {
-    static var title: LocalizedStringResource = "Start Drive Session"
-    static var description = IntentDescription("Begin recording a new drive session in Speedio")
+    static let title: LocalizedStringResource = "Start Drive Session"
+    static let description = IntentDescription("Begin recording a new drive session in Speedio")
     
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
@@ -14,8 +14,8 @@ struct StartDriveSessionIntent: AppIntent {
 }
 
 struct EndDriveSessionIntent: AppIntent {
-    static var title: LocalizedStringResource = "End Drive Session"
-    static var description = IntentDescription("Stop recording the current drive session")
+    static let title: LocalizedStringResource = "End Drive Session"
+    static let description = IntentDescription("Stop recording the current drive session")
     
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
@@ -33,8 +33,8 @@ struct EndDriveSessionIntent: AppIntent {
 }
 
 struct GetCurrentSpeedIntent: AppIntent {
-    static var title: LocalizedStringResource = "Get Current Speed"
-    static var description = IntentDescription("Check your current speed and limit")
+    static let title: LocalizedStringResource = "Get Current Speed"
+    static let description = IntentDescription("Check your current speed and limit")
     
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
@@ -50,8 +50,8 @@ struct GetCurrentSpeedIntent: AppIntent {
 }
 
 struct NavigateToDestinationIntent: AppIntent {
-    static var title: LocalizedStringResource = "Navigate to Destination"
-    static var description = IntentDescription("Start navigation to a specific place")
+    static let title: LocalizedStringResource = "Navigate to Destination"
+    static let description = IntentDescription("Start navigation to a specific place")
     
     // AppEntity parameter (not a plain String): entity parameters CAN be
     // used in App Shortcut phrases (plain Strings cannot), which is what
@@ -67,7 +67,7 @@ struct NavigateToDestinationIntent: AppIntent {
 
     // Background execution: CarPlay's map template takes over; the phone
     // HUD shows the route. No need to pull the app UI to the foreground.
-    static var openAppWhenRun: Bool = false
+    static let openAppWhenRun: Bool = false
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
@@ -93,10 +93,10 @@ struct NavigateToDestinationIntent: AppIntent {
 }
 
 struct StopNavigationIntent: AppIntent {
-    static var title: LocalizedStringResource = "Stop Navigation"
-    static var description = IntentDescription("End the current Speedio route")
+    static let title: LocalizedStringResource = "Stop Navigation"
+    static let description = IntentDescription("End the current Speedio route")
 
-    static var openAppWhenRun: Bool = false
+    static let openAppWhenRun: Bool = false
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
@@ -118,11 +118,11 @@ struct StopNavigationIntent: AppIntent {
 // through `AppDelegate.sharedDriveViewModel` (`@MainActor` final class).
 
 struct GetSpeedLimitIntent: AppIntent {
-    static var title: LocalizedStringResource = "Get Speed Limit"
-    static var description = IntentDescription("Check the current posted speed limit for the road you're on")
+    static let title: LocalizedStringResource = "Get Speed Limit"
+    static let description = IntentDescription("Check the current posted speed limit for the road you're on")
     // Read-only intent — Siri runs in the background and speaks the dialog
     // without pulling Speedoio's UI to the front.
-    static var openAppWhenRun: Bool = false
+    static let openAppWhenRun: Bool = false
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
@@ -145,11 +145,11 @@ struct GetSpeedLimitIntent: AppIntent {
 }
 
 struct GetNextManeuverDistanceIntent: AppIntent {
-    static var title: LocalizedStringResource = "Get Distance to Next Turn"
-    static var description = IntentDescription("Check how far until your next turn")
+    static let title: LocalizedStringResource = "Get Distance to Next Turn"
+    static let description = IntentDescription("Check how far until your next turn")
     // Read-only intent — Siri runs in the background and speaks the dialog
     // without pulling Speedoio's UI to the front.
-    static var openAppWhenRun: Bool = false
+    static let openAppWhenRun: Bool = false
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
@@ -177,11 +177,11 @@ struct GetNextManeuverDistanceIntent: AppIntent {
 }
 
 struct GetETAIntent: AppIntent {
-    static var title: LocalizedStringResource = "Get Arrival Time"
-    static var description = IntentDescription("Check what time you will arrive at your destination")
+    static let title: LocalizedStringResource = "Get Arrival Time"
+    static let description = IntentDescription("Check what time you will arrive at your destination")
     // Read-only intent — Siri runs in the background and speaks the dialog
     // without pulling Speedoio's UI to the front.
-    static var openAppWhenRun: Bool = false
+    static let openAppWhenRun: Bool = false
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
@@ -231,11 +231,11 @@ struct GetETAIntent: AppIntent {
 }
 
 struct GetDistanceToDestinationIntent: AppIntent {
-    static var title: LocalizedStringResource = "Get Distance to Destination"
-    static var description = IntentDescription("How far away your final destination is")
+    static let title: LocalizedStringResource = "Get Distance to Destination"
+    static let description = IntentDescription("How far away your final destination is")
     // Read-only intent — Siri runs in the background and speaks the dialog
     // without pulling Speedoio's UI to the front.
-    static var openAppWhenRun: Bool = false
+    static let openAppWhenRun: Bool = false
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {

@@ -45,7 +45,14 @@ final class CarPlayVoiceSearchController {
     // True until a results-drain task actually exists, so a Stop during the
     // mic-open delay never waits on a drain that will never report.
     private var resultsTaskDone = true
-    private var routeChangeObserver: NSObjectProtocol?
+    /// Removal token for the audio-route change observer. Wrapped in a
+    /// `@unchecked Sendable` box because `NotificationCenter.removeObserver(_:)`
+    /// is documented thread-safe, and the nonisolated `deinit` (Swift 6) may
+    /// only touch stored properties whose types are `Sendable`.
+    private struct RouteChangeObserverToken: @unchecked Sendable {
+        let observer: NSObjectProtocol
+    }
+    private var routeChangeObserver: RouteChangeObserverToken?
     private var silenceTimer: Timer?
     private var hardCapTimer: Timer?
     private var isFinalizing = false
@@ -63,9 +70,13 @@ final class CarPlayVoiceSearchController {
 
     init() {}
 
-    deinit {
+    // `isolated deinit`: the observer token is a non-Sendable `NSObjectProtocol`,
+    // so a plain nonisolated deinit cannot access it under Swift 6. The isolated
+    // deinit runs with the class's @MainActor isolation, making the property
+    // access safe.
+    isolated deinit {
         if let routeChangeObserver {
-            NotificationCenter.default.removeObserver(routeChangeObserver)
+            NotificationCenter.default.removeObserver(routeChangeObserver.observer)
         }
     }
 
@@ -315,7 +326,7 @@ final class CarPlayVoiceSearchController {
         resultsTaskDone = true
         isFinalizing = false
         if let observer = routeChangeObserver {
-            NotificationCenter.default.removeObserver(observer)
+            NotificationCenter.default.removeObserver(observer.observer)
             routeChangeObserver = nil
         }
     }
@@ -415,7 +426,7 @@ final class CarPlayVoiceSearchController {
     /// If the car (or Bluetooth kit) disconnects mid-listen, re-pick the
     /// preferred input so the remaining audio doesn't drop.
     private func watchForRouteChanges() {
-        routeChangeObserver = NotificationCenter.default.addObserver(
+        routeChangeObserver = RouteChangeObserverToken(observer: NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification,
             object: nil,
             queue: .main
@@ -424,7 +435,7 @@ final class CarPlayVoiceSearchController {
                 guard let self, let session = self.audioSession else { return }
                 try? session.setPreferredInput(CarPlayAudioInput.preferredInput(from: session))
             }
-        }
+        })
     }
 }
 

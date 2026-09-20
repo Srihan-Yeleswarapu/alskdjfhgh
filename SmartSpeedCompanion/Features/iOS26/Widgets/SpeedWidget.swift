@@ -107,7 +107,14 @@ struct SpeedWidgetEntryView : View {
     }
 }
 
+// `#if !SWIFT_PACKAGE`: Xcode's SwiftPM package build compiles every source
+// file into ONE module, where a second `@main` collides with the app's
+// `SpeedioApp`. In the generated project (project.yml) this file compiles
+// only into the widget extension target, which needs this bundle as its
+// `@main` entry point — and there SWIFT_PACKAGE is undefined.
+#if !SWIFT_PACKAGE
 @main
+#endif
 struct SpeedWidgetBundle: WidgetBundle {
     var body: some Widget {
         SpeedWidget()

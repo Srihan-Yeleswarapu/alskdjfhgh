@@ -1381,8 +1381,18 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
     // MARK: - CPMapTemplateDelegate
 
     nonisolated func mapTemplate(_ mapTemplate: CPMapTemplate, startedTrip trip: CPTrip, using routeChoice: CPRouteChoice) {
-        Task { @MainActor in
-            guard !isHandlingCarPlayTrip else { return }
+        // CPTrip is not Sendable, so even inside `MainActor.assumeIsolated`
+        // the @Sendable task closure cannot capture the parameter directly —
+        // the compiler can't prove the caller region won't touch it again.
+        // CarPlay hands us the trip on the main thread and the task hops
+        // straight back to the main actor, so boxing it in an
+        // unchecked-Sendable wrapper is race-free (same pattern as
+        // FinalTranscriptBox / AudioLevelGate).
+        struct TripBox: @unchecked Sendable { let trip: CPTrip }
+        let tripBox = TripBox(trip: trip)
+        MainActor.assumeIsolated {
+            Task { @MainActor in
+                guard !isHandlingCarPlayTrip else { return }
             isHandlingCarPlayTrip = true; defer { isHandlingCarPlayTrip = false }
             // CarPlay normally dismisses previews automatically for this
             // callback. Explicitly hide them as well: on some iOS 26 head
@@ -1390,13 +1400,14 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
             // control back after its async route calculation.
             mapTemplate.hideTripPreviews()
             if viewModel.isNavigating { await viewModel.navigationCoordinator.endNavigation() }
-            await navigationManager.handleCarPlayStartedTrip(trip)
+            await navigationManager.handleCarPlayStartedTrip(tripBox.trip)
             // The coordinator publishes the route during the async handoff.
             // Record that exact route so the synchronization publisher does
             // not install a second CarPlay session when this callback returns.
             if let route = viewModel.navigationCoordinator.currentRoute,
                let destination = viewModel.navigationCoordinator.destination {
                 lastPhoneNavigationHandoffKey = navigationHandoffKey(route: route, destination: destination)
+            }
             }
         }
     }

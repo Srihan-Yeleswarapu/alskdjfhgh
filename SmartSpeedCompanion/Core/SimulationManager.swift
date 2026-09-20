@@ -4,11 +4,22 @@ import CoreLocation
 import Combine
 
 /// Protocol to provide navigation data to the simulator for road-snapping.
+///
+/// `@MainActor`: the only conformer is the `@MainActor` `DriveViewModel`, and
+/// the only caller (`SimulationManager.broadcastMockLocation`) runs on the
+/// main actor too. Leaving the requirement nonisolated made the DriveViewModel
+/// conformance "cross into main actor-isolated code" under Swift 6.
+@MainActor
 public protocol SimulationDataSource: AnyObject {
     func getNearestPointOnRoute(to coordinate: CLLocationCoordinate2D) -> (coordinate: CLLocationCoordinate2D, heading: Double?)
 }
 
 /// A manager that handles manual override of GPS data for testing purposes.
+///
+/// `@MainActor`: all state (mock coordinate/heading/speed, the timer) is
+/// driven from the main-actor `DriveViewModel` and a main-RunLoop timer, so
+/// the singleton is safe to expose as a static under Swift 6.
+@MainActor
 public final class SimulationManager: ObservableObject {
     public static let shared = SimulationManager()
     
@@ -37,7 +48,11 @@ public final class SimulationManager: ObservableObject {
         timer = Timer.publish(every: 1.0, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
-                self?.broadcastMockLocation()
+                // The Combine sink closure is nonisolated; hop to the
+                // manager's @MainActor isolation before touching state.
+                Task { @MainActor in
+                    self?.broadcastMockLocation()
+                }
             }
     }
     

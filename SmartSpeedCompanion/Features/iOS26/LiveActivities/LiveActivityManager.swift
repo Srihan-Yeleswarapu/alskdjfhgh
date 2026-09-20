@@ -1,8 +1,18 @@
 // Path: Features/iOS26/LiveActivities/LiveActivityManager.swift
 import Foundation
-import ActivityKit
+// `@preconcurrency`: ActivityKit's `Activity` class is not Sendable-annotated,
+// but each instance is only ever touched by one task here (created on the main
+// actor, handed to a single unstructured Task that updates/ends it and is then
+// dropped). The import downgrades the strict-concurrency diagnostics for
+// crossing into ActivityKit's @concurrent update/end methods.
+@preconcurrency import ActivityKit
 
 @available(iOS 16.1, *)
+/// `@MainActor`: every caller (DriveViewModel session lifecycle) already runs
+/// on the main actor, and confining the class there lets the unstructured
+/// `Task`s below inherit main-actor isolation — legal under Swift 6 even
+/// though `Activity` itself is not `Sendable`.
+@MainActor
 public class LiveActivityManager {
     public static let shared = LiveActivityManager()
     

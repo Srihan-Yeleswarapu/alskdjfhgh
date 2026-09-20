@@ -28,8 +28,11 @@ struct DriveSessionEntity: IndexedEntity {
         TypeDisplayRepresentation(stringLiteral: "Drive Session")
     }
 
-    @MainActor
-    static var defaultQuery = DriveSessionEntityQuery()
+    // Nonisolated `static let` of an implicitly-Sendable query struct:
+    // satisfies AppEntity's nonisolated `defaultQuery` requirement under
+    // Swift 6 (a @MainActor stored static made the conformance cross into
+    // main-actor-isolated code).
+    static let defaultQuery = DriveSessionEntityQuery()
 
     /// The stable identifier — inherited as the Spotlight `uniqueIdentifier`.
     var id: String                       // DriveSession.id.uuidString

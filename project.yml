@@ -122,9 +122,9 @@ targets:
       # restore together with the `Firebase:` package block above.
       # - path: SmartSpeedCompanion/Configuration/GoogleService-Info.plist
       #   buildPhase: resources
-      - path: SmartSpeedCompanion/Configuration/HERE-Config.plist
-        buildPhase: resources
-        optional: true
+      # - path: SmartSpeedCompanion/Configuration/HERE-Config.plist
+      #   buildPhase: resources
+      #   optional: true
 
     # NOTE: The WidgetKit bundle (`SpeedWidget.swift` +
     # `SpeedLiveActivityView.swift`) lives in its own

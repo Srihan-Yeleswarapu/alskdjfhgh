@@ -291,7 +291,7 @@ final class DefaultVoiceAnnouncer: NSObject, VoiceAnnouncer, AVSpeechSynthesizer
 // MARK: - NavigationCoordinator
 
 @MainActor
-public final class NavigationCoordinator: ObservableObject {
+public final class NavigationCoordinator: ObservableObject, @unchecked Sendable {
 
     // MARK: - Published navigation state (verbatim move from DriveViewModel)
 
@@ -480,7 +480,11 @@ public final class NavigationCoordinator: ObservableObject {
     private let availableRoutesSetter: ([MKRoute]) -> Void
     /// Triggers host-VM reroute logic when off-route is detected
     /// (used by both 150m and 35m thresholds).
-    private let onRerouteRequest: (MKMapItem) async -> Void
+    // `@MainActor`: the only real implementation (DriveViewModel's reroute
+    // pipeline) and both call sites run on the main actor. Leaving the type
+    // nonisolated made Swift 6 treat each call as *sending* the MainActor-
+    // isolated MKMapItem into a @concurrent callee.
+    private let onRerouteRequest: @MainActor (MKMapItem) async -> Void
     /// Starts a recording session (only invoked when `!isRecordingProvider()`).
     private let startSession: () -> Void
     /// Updates the host ViewModel's navigation flag when navigation ends
@@ -530,7 +534,7 @@ public final class NavigationCoordinator: ObservableObject {
         nearbyCamerasProvider: @escaping () -> [SpeedCamera] = { [] },
         availableRoutesProvider: @escaping () -> [MKRoute] = { [] },
         availableRoutesSetter: @escaping ([MKRoute]) -> Void = { _ in },
-        onRerouteRequest: @escaping (MKMapItem) async -> Void = { _ in },
+        onRerouteRequest: @escaping @MainActor (MKMapItem) async -> Void = { _ in },
         startSession: @escaping () -> Void = { },
         setNavigating: @escaping (Bool) -> Void = { _ in },
         endSession: @escaping () -> Void = { },

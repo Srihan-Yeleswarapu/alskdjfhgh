@@ -18,7 +18,10 @@ public struct SpeedActivityAttributes: ActivityAttributes {
     //     return []
     // }
 
-    public struct ContentState: Codable, Hashable {
+    /// `Sendable`: all fields are value types, and the explicit conformance
+    /// lets `ActivityContent<ContentState>` cross actor boundaries when the
+    /// LiveActivityManager hands updates to ActivityKit's @concurrent APIs.
+    public struct ContentState: Codable, Hashable, Sendable {
         public var speed: Double
         public var speedLimit: Int
         public var status: String          // "safe" | "warning" | "over"

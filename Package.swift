@@ -16,7 +16,7 @@ let package = Package(
         .target(
             name: "SmartSpeedCompanion",
             path: "SmartSpeedCompanion",
-            exclude: ["Info.plist", "Resources/Entitlements/SmartSpeedCompanion.entitlements"]
+            exclude: ["Configuration/Info.plist", "Resources/Entitlements/SmartSpeedCompanion.entitlements"]
         ),
         .testTarget(
             name: "SmartSpeedCompanionTests",

@@ -159,16 +159,21 @@ public struct HapticRecordingView: View {
         recordingStart = Date()
         elapsed = 0
         taps = []
-        // Timer fires on the main RunLoop (Timer.scheduledTimer → current
-        // thread's RunLoop), and `tick()` is a `@MainActor`-isolated method
-        // we can call directly — no `Task { @MainActor in … }` indirection
-        // needed.
+        // Timer fires on the main RunLoop (Timer.scheduledTimer schedules on
+        // the current — main — thread's RunLoop). `tick()` is a
+        // `@MainActor`-isolated method (View conformance) while the Timer
+        // closure is `@Sendable`/nonisolated, so Swift 6 requires an explicit
+        // bridge: `assumeIsolated` asserts what is statically true here (the
+        // timer only ever fires on the main run loop) without the async
+        // indirection of `Task { @MainActor in … }`.
         // NOTE: SwiftUI views are value-type structs in Swift, so
         // `[weak self]` would be a compile error (`'weak' may only be
         // applied to class…`). The view stays alive while on-screen and
-        // `.onDisappear` invalidates the timer; just call `tick()` here.
+        // `.onDisappear` invalidates the timer.
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
-            tick()
+            MainActor.assumeIsolated {
+                tick()
+            }
         }
     }
 

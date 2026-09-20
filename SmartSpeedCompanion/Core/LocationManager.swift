@@ -1,13 +1,30 @@
 import Foundation
-import CoreLocation
+// `@preconcurrency`: CoreLocation's CLLocationManager / CLHeading / CLLocation
+// are not yet Sendable-annotated in the SDK, but they are confined to the
+// main run loop here (the manager is created on the main actor). The import
+// downgrades the strict-concurrency captures in the delegate witnesses from
+// errors to warnings instead of forcing value-by-value re-plumbing.
+@preconcurrency import CoreLocation
 import Combine
 
 /// A wrapper around CLLocationManager for high-accuracy GPS and navigation context.
+///
+/// `@MainActor`: CLLocationManager and its delegate callbacks are main-thread
+/// only (the delegate protocol is @MainActor-annotated in the SDK), and every
+/// owner (DriveViewModel, SpeedEngine, SessionRecorder, HEREGeofenceManager)
+/// is already @MainActor. Delegate methods therefore assign @Published state
+/// directly instead of hopping through DispatchQueue.main — the GCD hop was
+/// what triggered Swift 6's "sending 'self' risks causing data races" errors.
+@MainActor
 public final class LocationManager: NSObject, ObservableObject {
     /// Maximum horizontal error accepted for location-driven map and
     /// speed-limit work. Keep this policy shared with SpeedEngine so a fix
     /// accepted by Core Location cannot be silently excluded from lookup.
-    public static let maximumAcceptedHorizontalAccuracy: CLLocationAccuracy = 100.0
+    ///
+    /// `nonisolated`: an immutable Sendable constant, readable from any
+    /// isolation domain (SpeedEngine's `nonisolated` eligibility helper
+    /// references it).
+    public nonisolated static let maximumAcceptedHorizontalAccuracy: CLLocationAccuracy = 100.0
 
     private let manager = CLLocationManager()
     
@@ -61,9 +78,11 @@ public final class LocationManager: NSObject, ObservableObject {
         mockCancellable = NotificationCenter.default.publisher(for: .didUpdateMockLocation)
             .compactMap { $0.object as? CLLocation }
             .sink { [weak self] location in
-                guard let self = self, self.isMockMode, self.isUpdatingLocation else { return }
-                DispatchQueue.main.async {
-                    guard self.isUpdatingLocation else { return }
+                // The sink closure is nonisolated (Combine delivers on the
+                // posting thread); hop to the manager's @MainActor isolation
+                // before touching @Published state.
+                Task { @MainActor [weak self] in
+                    guard let self, self.isMockMode, self.isUpdatingLocation else { return }
                     self.latestLocation = location
                 }
             }
@@ -149,40 +168,47 @@ public final class LocationManager: NSObject, ObservableObject {
 }
 
 extension LocationManager: CLLocationManagerDelegate {
-    public func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        DispatchQueue.main.async {
-            self.authorizationStatus = manager.authorizationStatus
-            DebugLogger.shared.log("LocationManager: Authorization status changed to \(manager.authorizationStatus.rawValue).")
+    /// CLLocationManagerDelegate's requirements are nonisolated, so the
+    /// witnesses must be too. The manager is created on the main actor, which
+    /// pins its delegate callbacks to the main run loop — so each witness
+    /// re-enters the class's @MainActor state synchronously via
+    /// `MainActor.assumeIsolated` (no async hop, and the non-Sendable
+    /// CLLocation/CLHeading arguments never cross an actor boundary).
+    nonisolated public func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        // CLAuthorizationStatus is a Sendable C enum — read it before the
+        // actor hop so only the value (not the CLLocationManager) is captured.
+        let status = manager.authorizationStatus
+        MainActor.assumeIsolated {
+            authorizationStatus = status
+            DebugLogger.shared.log("LocationManager: Authorization status changed to \(status.rawValue).")
         }
     }
     
-    public func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        #if DEBUG || DEVELOPER_BUILD
-        if isMockMode { return }
-        #endif
-        
-        guard isUpdatingLocation, let location = locations.last else { return }
-        // Filter out stale or wildly inaccurate fixes to prevent map-going-bonkers
-        guard location.horizontalAccuracy >= 0,
-              location.horizontalAccuracy < Self.maximumAcceptedHorizontalAccuracy else { return }
-        DispatchQueue.main.async {
-            guard self.isUpdatingLocation else { return }
-            self.latestLocation = location
+    nonisolated public func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        MainActor.assumeIsolated {
+            #if DEBUG || DEVELOPER_BUILD
+            if isMockMode { return }
+            #endif
+            
+            guard isUpdatingLocation, let location = locations.last else { return }
+            // Filter out stale or wildly inaccurate fixes to prevent map-going-bonkers
+            guard location.horizontalAccuracy >= 0,
+                  location.horizontalAccuracy < Self.maximumAcceptedHorizontalAccuracy else { return }
+            latestLocation = location
             // NOTE: Per-update coordinate logging removed to reduce heat from constant 
             // log-flush I/O on devices processing ~1 GPS update per second.
         }
     }
     
-    public func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
-        guard isUpdatingLocation else { return }
-        DispatchQueue.main.async {
-            guard self.isUpdatingLocation else { return }
-            self.latestHeading = newHeading
+    nonisolated public func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+        MainActor.assumeIsolated {
+            guard isUpdatingLocation else { return }
+            latestHeading = newHeading
             // Heading updates fire continuously while driving — avoid logging here to prevent heat
         }
     }
 
-    public func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+    nonisolated public func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         DebugLogger.shared.log("LocationManager ERROR: \(error.localizedDescription)")
         print("LocationManager failed with error: \(error.localizedDescription)")
     }

@@ -1,6 +1,11 @@
 import SwiftUI
 import Combine
 
+// @MainActor: AppState is only ever touched from SwiftUI (environment object)
+// and the MainActor-isolated AppDelegate statics. The annotation also lets its
+// `authManager` stored property initialize from the @MainActor
+// `AuthenticationManager.shared` singleton under Swift 6.
+@MainActor
 public class AppState: ObservableObject {
     // ════════════════════════════════════════════════════════════════════
     // MARK: - Persisted state

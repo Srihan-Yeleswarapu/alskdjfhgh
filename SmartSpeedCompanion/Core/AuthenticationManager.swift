@@ -35,7 +35,7 @@ import UIKit // For device info if needed
 // ═══════════════════════════════════════════════════════════════════════════
 #if canImport(FirebaseAuth)
 
-public class AuthenticationManager: ObservableObject {
+@MainActor public class AuthenticationManager: ObservableObject {
     public static let shared = AuthenticationManager()
     
     @Published public var isAuthenticated: Bool = false
@@ -628,7 +628,7 @@ public enum AuthError: LocalizedError, Sendable {
 // is unlinked. Only the members that still have call sites are provided; the
 // full API lives inside the `#if canImport(FirebaseAuth)` branch above.
 
-public class AuthenticationManager: ObservableObject {
+@MainActor public class AuthenticationManager: ObservableObject {
     public static let shared = AuthenticationManager()
 
     @Published public var isAuthenticated: Bool = false

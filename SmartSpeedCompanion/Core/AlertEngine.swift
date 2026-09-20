@@ -95,7 +95,12 @@ public final class AlertEngine: ObservableObject, AlertEngineProtocol {
     /// AudioServices sound ID built from the tone buffer, used by the
     /// fallback alert path (plays through AudioServices' own audio path,
     /// which works even when AVAudioEngine cannot start).
-    private var fallbackAlertSoundID: SystemSoundID = 0
+    /// `nonisolated(unsafe)`: a plain UInt32 sound-id; the deinit must read
+    /// it to dispose the registered system sound, and this Swift compiler
+    /// forbids touching actor-isolated stored state from deinit. All other
+    /// accesses stay on the MainActor; deinit is the last touch before the
+    /// object is gone, so there is no concurrent access to guard against.
+    nonisolated(unsafe) private var fallbackAlertSoundID: SystemSoundID = 0
     
     // MARK: - Init
     public init(speedEngine: SpeedEngine) {
@@ -521,7 +526,10 @@ public final class AlertEngine: ObservableObject, AlertEngineProtocol {
         }
     }
     
-    deinit {
+    // `isolated deinit`: the class is @MainActor and the deinitializer reads
+    // the main-actor-isolated `fallbackAlertSoundID`; a plain nonisolated deinit
+    // cannot touch isolated state under Swift 6.
+    isolated deinit {
         NotificationCenter.default.removeObserver(self)
         if fallbackAlertSoundID != 0 {
             AudioServicesDisposeSystemSoundID(fallbackAlertSoundID)
