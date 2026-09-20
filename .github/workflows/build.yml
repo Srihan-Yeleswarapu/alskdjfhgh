@@ -12,7 +12,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # [FIREBASE-DISABLED 2026-09-16] Firebase is parked; the plist is no
       # longer bundled (see project.yml) and no code reads it. Restore this
@@ -131,7 +131,7 @@ jobs:
           if security cms -D -in /tmp/profile.mobileprovision.raw -out /tmp/profile.unwrapped.plist 2>/dev/null; then
             echo "[OK] Successfully unwrapped CMS/PKCS#7 envelope via security cms"
           else
-            echo "[WARN] security cms -D failed - extracting embedded plist directly from DER structure"
+            echo "[INFO] security cms -D unavailable on this runner -- extracting embedded plist directly from the PKCS#7 DER structure (expected fallback path)"
             python3 -c "import plistlib,sys; d=open('/tmp/profile.mobileprovision.raw','rb').read(); s=d.find(b'<?xml'); e=d.find(b'</plist>',s); assert s>=0 and e>=0,b'no plist boundaries found'; pb=d[s:e+len(b'</plist>')]; p=plistlib.loads(pb); assert 'UUID' in p, b'plist missing required UUID property'; open('/tmp/profile.unwrapped.plist','wb').write(pb); print('[OK] extracted clean plist: %d bytes, UUID=%s, Name=%s' % (len(pb),p['UUID'],p.get('Name','?')))"
           fi
 
@@ -271,7 +271,7 @@ jobs:
           if unzip -l "$IPA_PATH" | grep -q "embedded.mobileprovision"; then
             echo "[OK] embedded.mobileprovision already present in IPA"
           else
-            echo "[WARN] embedded.mobileprovision NOT found -- manually embedding..."
+            echo "[INFO] -exportArchive did not embed embedded.mobileprovision -- embedding manually (expected path)"
 
             if [ ! -f /tmp/profile.mobileprovision ]; then
               echo "[ERROR] /tmp/profile.mobileprovision not found!"
@@ -339,7 +339,7 @@ jobs:
           fi
 
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: Speedio-IPA-${{ github.run_number }}

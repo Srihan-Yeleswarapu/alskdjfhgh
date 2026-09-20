@@ -13,7 +13,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0   # full history so `git rev-list --count HEAD` returns an accurate build number
 
@@ -113,7 +113,7 @@ jobs:
           if security cms -D -in /tmp/profile.mobileprovision.raw -out /tmp/profile.unwrapped.plist 2>/dev/null; then
             echo "[OK] Successfully unwrapped CMS/PKCS#7 envelope via security cms"
           else
-            echo "[WARN] security cms -D failed - extracting embedded plist directly from DER structure"
+            echo "[INFO] security cms -D unavailable on this runner -- extracting embedded plist directly from the PKCS#7 DER structure (expected fallback path)"
             python3 -c "import plistlib,sys; d=open('/tmp/profile.mobileprovision.raw','rb').read(); s=d.find(b'<?xml'); e=d.find(b'</plist>',s); assert s>=0 and e>=0,b'no plist boundaries found'; pb=d[s:e+len(b'</plist>')]; p=plistlib.loads(pb); assert 'UUID' in p,b'plist missing required UUID property'; open('/tmp/profile.unwrapped.plist','wb').write(pb); print('[OK] extracted clean plist: %d bytes, UUID=%s, Name=%s' % (len(pb),p['UUID'],p.get('Name','?')))"
           fi
 
@@ -181,7 +181,7 @@ jobs:
             if security cms -D -in /tmp/widget_profile.mobileprovision.raw -out /tmp/widget_profile.unwrapped.plist 2>/dev/null; then
               echo "[OK] Successfully unwrapped WIDGET CMS/PKCS#7 envelope via security cms"
             else
-              echo "[WARN] security cms -D failed for WIDGET profile - extracting embedded plist directly from DER structure"
+              echo "[INFO] security cms -D unavailable for WIDGET profile -- extracting embedded plist directly from the PKCS#7 DER structure (expected fallback path)"
               python3 -c "import plistlib,sys; d=open('/tmp/widget_profile.mobileprovision.raw','rb').read(); s=d.find(b'<?xml'); e=d.find(b'</plist>',s); assert s>=0 and e>=0,b'no plist boundaries found'; pb=d[s:e+len(b'</plist>')]; p=plistlib.loads(pb); assert 'UUID' in p,b'plist missing required UUID property'; open('/tmp/widget_profile.unwrapped.plist','wb').write(pb); print('[OK] extracted WIDGET plist: %d bytes, UUID=%s' % (len(pb),p['UUID']))"
             fi
             cp /tmp/widget_profile.mobileprovision.raw /tmp/widget_profile.mobileprovision
