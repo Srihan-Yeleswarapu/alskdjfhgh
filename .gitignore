@@ -20,6 +20,10 @@ ci_*.log
 # Python cache
 __pycache__/
 *.pyc
+.pytest_cache/
+
+# Scratch/analysis temp dirs (tooling & one-off debugging output)
+*_tmp/
 
 # macOS junk
 .DS_Store
