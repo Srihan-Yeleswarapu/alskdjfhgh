@@ -79,8 +79,6 @@
 		<string>location</string>
 		<string>fetch</string>
 		<string>remote-notification</string>
-		<string>processing</string>
-		<string>external-accessory</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict>
