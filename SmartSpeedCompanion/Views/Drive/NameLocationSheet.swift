@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 import MapKit
 
 /// Bottom sheet that appears when the user wants to name a location on the map.

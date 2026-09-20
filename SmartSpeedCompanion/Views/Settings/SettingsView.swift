@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 
 public struct SettingsView: View {
     @AppStorage("userBuffer") var buffer: Double = 5
