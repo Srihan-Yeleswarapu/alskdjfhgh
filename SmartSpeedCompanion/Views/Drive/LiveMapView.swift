@@ -493,9 +493,12 @@ public struct LiveMapView: UIViewRepresentable {
         Coordinator(self)
     }
 
+    @MainActor
     public class Coordinator: NSObject, MKMapViewDelegate, UIGestureRecognizerDelegate {
         var parent: LiveMapView
-        private var interactionTimer: Timer?
+        /// `nonisolated(unsafe)`: invalidate() from the deinit is the final
+        /// touch of this timer (deinitialization cannot race a live owner).
+        nonisolated(unsafe) private var interactionTimer: Timer?
 
         /// Set when the user manually detaches (pan/pinch). Cleared on the
         /// first `updateUIView` pass after `isMapDetached` flips back to
@@ -624,13 +627,16 @@ public struct LiveMapView: UIViewRepresentable {
         private var maneuverAnnotation: ManeuverAnnotation? = nil
 
         // Overlay state tracking to avoid redundant remove/add cycles.
-        // Progress is rendered in coarse distance-sized steps instead of every
-        // GPS tick. Rebuilding a long MKPolyline is synchronous MapKit work;
-        // the previous 25 m cadence could remove/re-add three large overlays
-        // every second on an iPhone XR and starve the UIKit run loop.
+        // Progress is rendered in distance-sized steps instead of every GPS
+        // tick. Rebuilding a long MKPolyline is synchronous MapKit work; the
+        // original 25 m cadence removed/re-added three large overlays every
+        // second on an iPhone XR and starved the UIKit run loop. 60 m keeps
+        // the travelled-behind slice visibly tracking the vehicle (≤60 m of
+        // lag at the grey/cyan split) while a highway cadence rebuilds at
+        // most every ~2 s.
         private var lastIsNavigating: Bool = false
         private var lastRenderedRouteProgress: CLLocationDistance = -1
-        private let routeProgressRenderStep: CLLocationDistance = 500
+        private let routeProgressRenderStep: CLLocationDistance = 60
         private var lastRouteDistance: Double = 0
         /// Geometry fingerprint catches a reroute that has the same distance
         /// as the previous route. Distance-only invalidation left old route
@@ -641,6 +647,9 @@ public struct LiveMapView: UIViewRepresentable {
         /// Forces one cleanup pass after history-trail rendering was disabled,
         /// so a map instance cannot retain trails created by an older code path.
         private var hasClearedDisabledHistoryOverlays = false
+        // Traveled-path trail state (session breadcrumbs from DriveViewModel).
+        private var trailPolyline: TrailPolyline?
+        private var lastRenderedTrailCount = 0
 
         #if DEBUG || DEVELOPER_BUILD
         private var simulatedCarAnnotation: MKPointAnnotation?
@@ -652,6 +661,15 @@ public struct LiveMapView: UIViewRepresentable {
 
         deinit {
             interactionTimer?.invalidate()
+            #if DEBUG || DEVELOPER_BUILD
+            // `nonisolated(unsafe)` like interactionTimer above: teardown in
+            // deinit is the final touch of the display link (deinitialization
+            // cannot race a live owner), so the MainActor invalidate helper
+            // is neither required nor callable here.
+            simDisplayLink?.invalidate()
+            simDisplayLink = nil
+            simFrameProxy = nil
+            #endif
         }
 
         @objc func handleManualInteraction(_ gesture: UIGestureRecognizer) {
@@ -706,6 +724,28 @@ public struct LiveMapView: UIViewRepresentable {
 
         #if DEBUG || DEVELOPER_BUILD
         // MARK: - Simulation Management
+
+        // The simulator's mock GPS fires at 1 Hz, so writing the mock fix
+        // straight to the map made the viewport and the simulated vehicle
+        // jump in discrete second-sized lurches (a 35 mph tick teleports the
+        // car ~15 m, tripping an 8 m setCenter snap every second). A display
+        // link interpolates both toward the latest mock fix every frame
+        // instead, giving the simulator the same gliding follow feel
+        // MapKit's own tracking gives real GPS on device.
+        nonisolated(unsafe) private var simDisplayLink: CADisplayLink?
+        nonisolated(unsafe) private var simFrameProxy: SimFrameProxy?
+        private weak var simMapView: MKMapView?
+        private weak var simViewModel: DriveViewModel?
+        private var simCarTarget = CLLocationCoordinate2D(latitude: 0, longitude: 0)
+        private var simCarCurrent = CLLocationCoordinate2D(latitude: 0, longitude: 0)
+        private var simCenterCurrent = CLLocationCoordinate2D(latitude: 0, longitude: 0)
+        private var simLastFrameTimestamp: CFTimeInterval = 0
+        /// Interpolation time constant: reaches ~96% of a 1 Hz jump within
+        /// one tick period, so the car glides without perceptibly lagging.
+        private static let simSmoothingTauSeconds: Double = 0.30
+        /// Below this remaining distance the smoothed value snaps onto the
+        /// target and camera writes stop entirely (converged = silent).
+        private static let simConvergeDistanceMeters: Double = 0.5
         func updateSimulatedCar(_ mapView: MKMapView, viewModel: DriveViewModel) {
             guard let mockLocation = viewModel.locationManager.latestLocation else { return }
 
@@ -715,27 +755,91 @@ public struct LiveMapView: UIViewRepresentable {
                 ann.title = "SIMULATED_CAR"
                 mapView.addAnnotation(ann)
                 simulatedCarAnnotation = ann
+                // First appearance starts from the truth instead of gliding
+                // across the planet from (0, 0).
+                simCarCurrent = mockLocation.coordinate
             }
-
-            // Update coordinate
-            simulatedCarAnnotation?.coordinate = mockLocation.coordinate
 
             // Sync map showsUserLocation state
             if mapView.showsUserLocation != false {
                 mapView.showsUserLocation = false
             }
 
-            // Keep the simulated vehicle centered without enqueueing a UIKit
-            // animation for every SwiftUI update. Repeated animated center
-            // changes were a direct source of visible map pulsing.
+            let linkWasIdle = simDisplayLink == nil
+            simMapView = mapView
+            simViewModel = viewModel
+            simCarTarget = mockLocation.coordinate
+            if linkWasIdle {
+                simCenterCurrent = mapView.centerCoordinate
+                simLastFrameTimestamp = 0
+                ensureSimDisplayLink()
+            }
+        }
+
+        private func ensureSimDisplayLink() {
+            guard simDisplayLink == nil else { return }
+            let proxy = SimFrameProxy()
+            proxy.coordinator = self
+            let link = CADisplayLink(target: proxy, selector: #selector(SimFrameProxy.frameTick(_:)))
+            link.add(to: .main, forMode: .common)
+            simDisplayLink = link
+            simFrameProxy = proxy
+        }
+
+        private func invalidateSimDisplayLink() {
+            simDisplayLink?.invalidate()
+            simDisplayLink = nil
+            simFrameProxy = nil
+            simLastFrameTimestamp = 0
+        }
+
+        fileprivate func simFrameTick(_ link: CADisplayLink) {
+            guard let mapView = simMapView,
+                  let viewModel = simViewModel,
+                  viewModel.locationManager.isMockMode else {
+                invalidateSimDisplayLink()
+                return
+            }
+            var dt: Double = 1.0 / 30.0
+            if simLastFrameTimestamp > 0 {
+                dt = min(max(link.timestamp - simLastFrameTimestamp, 0.001), 0.1)
+            }
+            simLastFrameTimestamp = link.timestamp
+
+            let alpha = 1 - exp(-dt / Self.simSmoothingTauSeconds)
+            let distanceRemaining = CLLocation(latitude: simCarCurrent.latitude, longitude: simCarCurrent.longitude)
+                .distance(from: CLLocation(latitude: simCarTarget.latitude, longitude: simCarTarget.longitude))
+            if distanceRemaining < Self.simConvergeDistanceMeters {
+                simCarCurrent = simCarTarget
+                simCenterCurrent = simCarTarget
+            } else {
+                simCarCurrent = Self.interpolated(simCarCurrent, toward: simCarTarget, alpha: alpha)
+                simCenterCurrent = Self.interpolated(simCenterCurrent, toward: simCarTarget, alpha: alpha)
+            }
+            simulatedCarAnnotation?.coordinate = simCarCurrent
+
+            // Center only while follow is attached; a detached (panned) map
+            // stays where the user put it until auto-resume reattaches. The
+            // distance check stops camera writes once converged instead of
+            // re-centering every frame.
             if !viewModel.isMapDetached {
-                let current = mapView.centerCoordinate
-                let moved = CLLocation(latitude: current.latitude, longitude: current.longitude)
-                    .distance(from: mockLocation)
-                if moved >= 8 {
-                    mapView.setCenter(mockLocation.coordinate, animated: false)
+                let centerDrift = CLLocation(latitude: simCenterCurrent.latitude, longitude: simCenterCurrent.longitude)
+                    .distance(from: CLLocation(latitude: mapView.centerCoordinate.latitude, longitude: mapView.centerCoordinate.longitude))
+                if centerDrift > Self.simConvergeDistanceMeters {
+                    mapView.setCenter(simCenterCurrent, animated: false)
                 }
             }
+        }
+
+        private static func interpolated(
+            _ from: CLLocationCoordinate2D,
+            toward to: CLLocationCoordinate2D,
+            alpha: Double
+        ) -> CLLocationCoordinate2D {
+            CLLocationCoordinate2D(
+                latitude: from.latitude + (to.latitude - from.latitude) * alpha,
+                longitude: from.longitude + (to.longitude - from.longitude) * alpha
+            )
         }
         #endif
 
@@ -745,6 +849,7 @@ public struct LiveMapView: UIViewRepresentable {
         // not tear down camera/POI/stop annotations or unrelated MapKit layers.
         func updateOverlaysIfNeeded(_ mapView: MKMapView, viewModel: DriveViewModel) {
             let vm = viewModel
+            updateTraveledTrailOverlay(mapView, viewModel: vm)
             let currentRouteDistance = vm.currentRoute?.distance ?? 0
             let currentRouteFingerprint = vm.currentRoute.map(Self.routeFingerprint(for:))
             let isNavigating = vm.isNavigating
@@ -869,6 +974,10 @@ public struct LiveMapView: UIViewRepresentable {
             // remove unrelated MapKit overlays during a progress tick.
             if !hasClearedDisabledHistoryOverlays {
                 mapView.removeOverlays(mapView.overlays)
+                // The legacy wipe also removed the traveled trail; force its
+                // re-add on the next overlay pass.
+                lastRenderedTrailCount = -1
+                trailPolyline = nil
             } else {
                 removeRenderedRouteOverlays(mapView)
             }
@@ -1075,6 +1184,29 @@ public struct LiveMapView: UIViewRepresentable {
             // Historical GPS trails are intentionally not rendered. The
             // active route itself provides the only path overlay: its
             // travelled portion is greyed and its remaining portion is blue.
+        }
+
+        // MARK: - Traveled-Path Trail
+
+        /// Renders the session's traveled path as a translucent cyan ribbon
+        /// behind the vehicle. The travelled/remaining route split only exists
+        /// during active route guidance, so free driving previously drew no
+        /// path behind the user at all. Rebuilt only when the recorded point
+        /// count changes (≥12 m spacing, so roughly 0.4–1 Hz while moving),
+        /// which keeps the synchronous polyline rebuild well below the
+        /// per-tick cadence the XR perf notes warned about.
+        private func updateTraveledTrailOverlay(_ mapView: MKMapView, viewModel: DriveViewModel) {
+            let trail = viewModel.sessionTrail
+            guard trail.count != lastRenderedTrailCount else { return }
+            lastRenderedTrailCount = trail.count
+            if let existing = trailPolyline {
+                mapView.removeOverlay(existing)
+                trailPolyline = nil
+            }
+            guard trail.count > 1 else { return }
+            let line = TrailPolyline(coordinates: trail, count: trail.count)
+            mapView.addOverlay(line, level: .aboveRoads)
+            trailPolyline = line
         }
 
         /// Renders the active route as two slices of the original MKRoute
@@ -1301,6 +1433,18 @@ public struct LiveMapView: UIViewRepresentable {
                 return renderer
             }
 
+            // TRAVELED-PATH TRAIL — translucent cyan ribbon behind the
+            // vehicle for the current session. Thinner and fainter than the
+            // active route so the two never compete for attention.
+            if let polyline = overlay as? TrailPolyline {
+                let renderer = MKPolylineRenderer(polyline: polyline)
+                renderer.strokeColor = UIColor(DesignSystem.cyan).withAlphaComponent(0.55)
+                renderer.lineWidth = 5.0
+                renderer.lineCap = .round
+                renderer.lineJoin = .round
+                return renderer
+            }
+
             // Shadow/glow polyline rendered underneath the main route
             if let polyline = overlay as? GlowPolyline {
                 let renderer = MKPolylineRenderer(polyline: polyline)
@@ -1489,6 +1633,27 @@ class NavPolyline: MKPolyline {
 class GlowPolyline: MKPolyline {
     var glowColor: UIColor = .systemCyan
 }
+
+/// Session traveled-path breadcrumb trail rendered behind the vehicle.
+/// Deliberately distinct from NavPolyline so guidance styling and trail
+/// styling can evolve independently.
+class TrailPolyline: MKPolyline {}
+
+#if DEBUG || DEVELOPER_BUILD
+/// Run-loop target for the simulator's follow smoothing display link.
+/// Lives at file scope and retains only this lightweight proxy instead of
+/// the map coordinator, so invalidate() breaks the retain cycle.
+@MainActor
+final class SimFrameProxy: NSObject {
+    weak var coordinator: LiveMapView.Coordinator?
+
+    @objc func frameTick(_ link: CADisplayLink) {
+        // CADisplayLink fires on the main run loop, honoring the class's
+        // MainActor isolation.
+        coordinator?.simFrameTick(link)
+    }
+}
+#endif
 
 /// Lighter-weight polyline used for ALTERNATIVE routes during the
 /// route-selection step (`isSelectingRoute == true`). MKDirections

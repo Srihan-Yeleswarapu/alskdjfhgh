@@ -131,6 +131,18 @@ public final class DriveViewModel: NSObject, ObservableObject {
     /// MapWithHUDView). Drives the cyan ring + brightness pulse that gives
     /// the user immediate visual feedback when their tap landed.
     @Published public var isRefreshingSpeedLimit: Bool = false
+    /// Session traveled-path breadcrumbs for the map's cyan trail ribbon.
+    /// Intentionally NOT @Published: LiveMapView polls this inside
+    /// `updateOverlaysIfNeeded`, and a per-fix SwiftUI invalidation would
+    /// churn every HUD view 1-2x per second just to move a map overlay.
+    public private(set) var sessionTrail: [CLLocationCoordinate2D] = []
+    /// Spacing between recorded trail points; directly controls how often
+    /// the map rebuilds the trail polyline (count-change triggered).
+    private static let trailPointSpacingMeters: Double = 12
+    /// Cap keeps worst-case polyline rebuild cost bounded (a 24 km tail at
+    /// 12 m spacing). Points are dropped from the oldest end — the camera
+    /// follows the vehicle, so the far tail is off-screen anyway.
+    private static let trailMaxPoints = 2000
     
     // MARK: - Navigation State
     /// Indicates if active turn-by-turn navigation is running.
@@ -916,6 +928,15 @@ public final class DriveViewModel: NSObject, ObservableObject {
         spdEngine.$status.assign(to: &$status)
         alrtEngine.$audioAlertActive.assign(to: &$alertActive)
         rec.$isRecording.assign(to: &$isRecording)
+        // The trail belongs to a single session: wipe it when the session
+        // ends so the next drive starts from a clean map.
+        $isRecording
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] active in
+                if !active { self?.sessionTrail.removeAll(keepingCapacity: true) }
+            }
+            .store(in: &cancellables)
 
         // Keep the source label coupled to the same published limit that is
         // shown by the HUD. During a refresh SpeedEngine clears its limit to 0
@@ -998,6 +1019,10 @@ public final class DriveViewModel: NSObject, ObservableObject {
                         await self?.refreshCurrentRoadName(at: coord, generation: generation)
                     }
                 }
+                // TRAVELED-PATH TRAIL: append the fix to the session
+                // breadcrumb store at >=12 m spacing so the map's cyan trail
+                // follows the vehicle without rebuilding a polyline per tick.
+                self.appendTrailPointIfNeeded(at: location)
                 // Advance turn-by-turn guidance (delegated to NavigationCoordinator).
                 if self.isNavigating {
                     self.navigationCoordinator.updateNavigationProgress(at: location)
@@ -1113,6 +1138,24 @@ public final class DriveViewModel: NSObject, ObservableObject {
                 }
             }
             .store(in: &cancellables)
+    }
+
+    // MARK: - Traveled-Path Trail
+
+    /// Appends `location` to `sessionTrail` when it is at least
+    /// `trailPointSpacingMeters` from the last recorded point. The map
+    /// rebuilds the trail polyline only when the recorded count changes,
+    /// so this spacing directly controls rebuild frequency (~0.4-1 Hz
+    /// while moving instead of once per GPS fix).
+    private func appendTrailPointIfNeeded(at location: CLLocation) {
+        if let last = sessionTrail.last {
+            let lastFix = CLLocation(latitude: last.latitude, longitude: last.longitude)
+            guard location.distance(from: lastFix) >= Self.trailPointSpacingMeters else { return }
+        }
+        sessionTrail.append(location.coordinate)
+        if sessionTrail.count > Self.trailMaxPoints {
+            sessionTrail.removeFirst(sessionTrail.count - Self.trailMaxPoints)
+        }
     }
     
     // MARK: - Drive Session Management
@@ -2702,9 +2745,16 @@ public final class DriveViewModel: NSObject, ObservableObject {
 // so we must hop to @MainActor when updating @Published properties
 extension DriveViewModel: MKLocalSearchCompleterDelegate {
     nonisolated public func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
+        // MKLocalSearchCompleter is not Sendable, so the @Sendable main-actor
+        // closure cannot capture the parameter directly. Boxing it in an
+        // unchecked-Sendable wrapper preserves the original data flow: the
+        // completer delivers its results with the callback, and reading
+        // `.results` after the hop yields the same snapshot it handed us.
+        struct CompleterBox: @unchecked Sendable { let completer: MKLocalSearchCompleter }
+        let box = CompleterBox(completer: completer)
         // Hop to MainActor to update @Published property
         Task { @MainActor [weak self] in
-            self?.searchCompletions = completer.results
+            self?.searchCompletions = box.completer.results
         }
     }
     
@@ -2733,12 +2783,28 @@ extension DriveViewModel: SimulationDataSource {
         var closest = polyPoints[0].coordinate
         var bestHeading: Double? = nil
         
-        // Find nearest segment
+        // Find nearest segment. The point-projection math is inlined here
+        // (not shared with the MainActor helper below) because this
+        // nonisolated SimulationDataSource witness cannot see the class's
+        // private instance methods from a same-type extension.
         for i in 0..<count - 1 {
             let p1 = polyPoints[i].coordinate
             let p2 = polyPoints[i+1].coordinate
             
-            let nearestOnSegment = nearestPointOnSegment(p: coordinate, v: p1, w: p2)
+            // Project `coordinate` onto segment p1→p2 (clamped to the endpoints).
+            let l2 = pow(p1.longitude - p2.longitude, 2) + pow(p1.latitude - p2.latitude, 2)
+            let nearestOnSegment: CLLocationCoordinate2D
+            if l2 == 0 {
+                nearestOnSegment = p1
+            } else {
+                var t = ((coordinate.longitude - p1.longitude) * (p2.longitude - p1.longitude)
+                       + (coordinate.latitude - p1.latitude) * (p2.latitude - p1.latitude)) / l2
+                t = max(0, min(1, t))
+                nearestOnSegment = CLLocationCoordinate2D(
+                    latitude: p1.latitude + t * (p2.latitude - p1.latitude),
+                    longitude: p1.longitude + t * (p2.longitude - p1.longitude)
+                )
+            }
             let dist = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
                 .distance(from: CLLocation(latitude: nearestOnSegment.latitude, longitude: nearestOnSegment.longitude))
             
