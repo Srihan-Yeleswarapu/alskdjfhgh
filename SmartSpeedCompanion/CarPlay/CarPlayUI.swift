@@ -149,8 +149,9 @@ enum CarPlayUI {
     /// single function so the two surfaces can never drift apart.
     ///
     /// Geometry follows MUTCD R2-1 proportions adapted to a square canvas:
-    /// ~10% corner rounding, a ~7%-of-width black border, a tight
-    /// SPEED / LIMIT caption stack, and a dominant black numeral.
+    /// ~12% corner rounding, a white rim OUTSIDE a ~5%-of-width black border
+    /// (like the stamped aluminum blank), and a SPEED / LIMIT + numeral stack
+    /// centered as one block so the face is never top- or bottom-heavy.
     static func speedLimitSign(value: Int?, unit: String?, size: CGFloat) -> UIImage {
         let size = max(24, size)
         let format = UIGraphicsImageRendererFormat.default()
@@ -158,18 +159,23 @@ enum CarPlayUI {
         let renderer = UIGraphicsImageRenderer(size: CGSize(width: size, height: size), format: format)
         return renderer.image { _ in
             let rect = CGRect(x: 0, y: 0, width: size, height: size)
-            let cornerRadius = size * 0.10
+            let cornerRadius = size * 0.12
 
-            // Face + thick black regulatory border.
-            let face = UIBezierPath(roundedRect: rect, cornerRadius: cornerRadius)
+            // White face, then the black regulatory border inset from the
+            // edge so a thin white rim stays visible outside it — exactly
+            // like the real R2-1 blank. The stroke is centered on its path,
+            // so inset by rim + half the border width.
+            let rim = size * 0.045
+            let borderWidth = size * 0.05
             signWhite.setFill()
-            face.fill()
-            let border = UIBezierPath(
-                roundedRect: rect.insetBy(dx: size * 0.035, dy: size * 0.035),
-                cornerRadius: cornerRadius * 0.92
-            )
+            UIBezierPath(roundedRect: rect, cornerRadius: cornerRadius).fill()
             signBlack.setStroke()
-            border.lineWidth = size * 0.07
+            let borderInset = rim + borderWidth / 2
+            let border = UIBezierPath(
+                roundedRect: rect.insetBy(dx: borderInset, dy: borderInset),
+                cornerRadius: cornerRadius * 0.82
+            )
+            border.lineWidth = borderWidth
             border.stroke()
 
             let numeral: String
@@ -185,45 +191,101 @@ enum CarPlayUI {
                 && unit?.isEmpty == false
                 && unit?.uppercased() != "MPH"
 
-            // draw(in:) (not draw(at:)) so the centered paragraph style
-            // really centers each line horizontally in the sign.
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.alignment = .center
-            let captionAttrs: [NSAttributedString.Key: Any] = [
-                .font: UIFont.systemFont(ofSize: size * 0.15, weight: .heavy),
-                .paragraphStyle: paragraph,
-                .kern: size * 0.01
-            ]
-            let numeralFontSize = showUnit ? size * 0.33 : size * 0.40
-            let numeralAttrs: [NSAttributedString.Key: Any] = [
-                .font: UIFont.systemFont(ofSize: numeralFontSize, weight: .black),
-                .paragraphStyle: paragraph
-            ]
+            // Layout is done in INK coordinates, not font line boxes: each
+            // line is placed by its capHeight (the actual black glyph area),
+            // via CoreText baseline positioning. This keeps the stack truly
+            // centered regardless of font line-height padding quirks.
+            let captionKern = size * 0.015
+            let captionFont = UIFont.systemFont(ofSize: size * 0.155, weight: .heavy)
+            let numeralFont = UIFont.systemFont(ofSize: showUnit ? size * 0.34 : size * 0.44, weight: .black)
+            let unitFont = UIFont.systemFont(ofSize: size * 0.105, weight: .heavy)
 
-            var y = size * 0.115
-            let captionLineHeight = size * 0.15
-            for word in ["SPEED", "LIMIT"] {
-                (word as NSString).draw(
-                    in: CGRect(x: 0, y: y, width: size, height: captionLineHeight),
-                    withAttributes: captionAttrs
-                )
-                y += captionLineHeight
+            let captionInk = captionFont.capHeight
+            let numeralInk = numeralFont.capHeight
+            let unitInk = unitFont.capHeight
+            let captionGap = size * 0.020   // SPEED ↔ LIMIT
+            let numeralGap = size * 0.032   // LIMIT ↔ numeral
+            let unitGap = showUnit ? size * 0.012 : 0
+
+            let stackHeight = captionInk + captionGap + captionInk
+                + numeralGap + numeralInk + unitGap + (showUnit ? unitInk : 0)
+            let stackTop = (size - stackHeight) / 2
+
+            /// Draws one line horizontally centered with the TOP of its
+            /// glyph ink (the actual black area) at `inkTop`. CoreText
+            /// positions from the baseline, so the baseline is derived from
+            /// the line's measured ink span; the CT y-up flip puts it at
+            /// `size - baseline`.
+            /// When `slotInk` is given (the "--" placeholder), the line's ink
+            /// is centered inside the [inkTop, inkTop + slotInk] band instead
+            /// of pinned to the cap line — hyphens are only ~30% of cap
+            /// height, so top-pinning would hug them to the slot's top.
+            func drawInk(_ text: String, font: UIFont, inkTop: CGFloat, kern: CGFloat = 0, centerInSlotOf slotInk: CGFloat? = nil) {
+                let attrs: [NSAttributedString.Key: Any] = [.font: font, .kern: kern]
+                let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attrs))
+                let lineWidth = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+
+                // Measure the line's ink span above the baseline from its
+                // own glyph bounding boxes (digits/caps top out at cap
+                // height; hyphens are much shorter). Falls back to the
+                // font's cap height if measurement ever fails.
+                var inkTopAboveBaseline = font.capHeight
+                var inkBottomAboveBaseline: CGFloat = 0
+                let runs = (CTLineGetGlyphRuns(line) as? [CTRun]) ?? []
+                var measuredAnyGlyph = false
+                var maxAbove = -CGFloat.greatestFiniteMagnitude
+                var minAbove = CGFloat.greatestFiniteMagnitude
+                for run in runs {
+                    let count = CTRunGetGlyphCount(run)
+                    guard count > 0 else { continue }
+                    var glyphs = [CGGlyph](repeating: 0, count: count)
+                    CTRunGetGlyphs(run, CFRange(location: 0, length: count), &glyphs)
+                    var bounds = [CGRect](repeating: .zero, count: count)
+                    // UIFont toll-free-bridges to CTFont; the font passed
+                    // in IS the one attached to the string, so measure with
+                    // its actual weight.
+                    CTFontGetBoundingRectsForGlyphs(font, .horizontal, glyphs, &bounds, count)
+                    for b in bounds {
+                        measuredAnyGlyph = true
+                        maxAbove = max(maxAbove, b.maxY)
+                        minAbove = min(minAbove, b.minY)
+                    }
+                }
+                if measuredAnyGlyph, maxAbove > minAbove {
+                    inkTopAboveBaseline = maxAbove
+                    inkBottomAboveBaseline = minAbove
+                }
+
+                let baselineFromTop: CGFloat
+                if let slotInk {
+                    let inkHeight = inkTopAboveBaseline - inkBottomAboveBaseline
+                    baselineFromTop = inkTop + (slotInk - inkHeight) / 2 + inkTopAboveBaseline
+                } else {
+                    baselineFromTop = inkTop + inkTopAboveBaseline
+                }
+
+                // Kern trails the final glyph too, so the typographic width
+                // carries one extra trailing space — subtract it so the
+                // visible ink is what gets centered, not ink + padding.
+                let inkWidth = max(0, lineWidth - kern)
+                let ctx = UIGraphicsGetCurrentContext()
+                ctx?.saveGState()
+                ctx?.textMatrix = .identity
+                ctx?.translateBy(x: 0, y: size)
+                ctx?.scaleBy(x: 1, y: -1)
+                ctx?.textPosition = CGPoint(x: (size - inkWidth) / 2, y: size - baselineFromTop)
+                CTLineDraw(line, ctx!)
+                ctx?.restoreGState()
             }
-            let numeralHeight = numeralFontSize * 1.1
-            (numeral as NSString).draw(
-                in: CGRect(x: 0, y: y - size * 0.015, width: size, height: numeralHeight),
-                withAttributes: numeralAttrs
-            )
+
+            drawInk("SPEED", font: captionFont, inkTop: stackTop, kern: captionKern)
+            drawInk("LIMIT", font: captionFont, inkTop: stackTop + captionInk + captionGap, kern: captionKern)
+            let numeralTop = stackTop + captionInk + captionGap + captionInk + numeralGap
+            let isPlaceholder = numeral == "--"
+            drawInk(numeral, font: numeralFont, inkTop: numeralTop,
+                    centerInSlotOf: isPlaceholder ? numeralInk : nil)
             if showUnit, let unit {
-                let unitAttrs: [NSAttributedString.Key: Any] = [
-                    .font: UIFont.systemFont(ofSize: size * 0.10, weight: .heavy),
-                    .paragraphStyle: paragraph,
-                    .kern: size * 0.01
-                ]
-                (unit as NSString).draw(
-                    in: CGRect(x: 0, y: y + numeralHeight - size * 0.045, width: size, height: size * 0.12),
-                    withAttributes: unitAttrs
-                )
+                drawInk(unit, font: unitFont, inkTop: numeralTop + numeralInk + unitGap)
             }
         }.withRenderingMode(.alwaysOriginal)
     }
