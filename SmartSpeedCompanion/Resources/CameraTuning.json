@@ -1,0 +1,38 @@
+{
+    "_comment": "Camera System v2 tuning. Loaded by CameraTuning.loadTuning() in Core/CameraSystem.swift; a malformed or missing file falls back to the compile-time defaults mirrored there. cruiseLevels: the vehicle occupies level i while smoothed speed is in (holdSpeedMph, maxSpeedMph]; entering requires crossing maxSpeedMph and dwelling, leaving downward requires dropping below holdSpeedMph and dwelling — that gap IS the anti-jitter hysteresis band.",
+    "cruiseLevels": [
+        { "maxSpeedMph": 3,   "holdSpeedMph": 0,  "altitude": 320,  "pitch": 0  },
+        { "maxSpeedMph": 15,  "holdSpeedMph": 11, "altitude": 420,  "pitch": 16 },
+        { "maxSpeedMph": 25,  "holdSpeedMph": 19, "altitude": 560,  "pitch": 26 },
+        { "maxSpeedMph": 35,  "holdSpeedMph": 27, "altitude": 780,  "pitch": 34 },
+        { "maxSpeedMph": 45,  "holdSpeedMph": 35, "altitude": 1100, "pitch": 42 },
+        { "maxSpeedMph": 55,  "holdSpeedMph": 43, "altitude": 1550, "pitch": 48 },
+        { "maxSpeedMph": 65,  "holdSpeedMph": 51, "altitude": 2100, "pitch": 53 },
+        { "maxSpeedMph": 999, "holdSpeedMph": 56, "altitude": 2800, "pitch": 57 }
+    ],
+    "maneuver": {
+        "startDistanceM": 700,
+        "fullTightenDistanceM": 90,
+        "minMultiplier": 0.5
+    },
+    "pitchFlatten": {
+        "triggerDistanceM": 180,
+        "fullFlattenDistanceM": 40,
+        "maxFlattenDeg": 14
+    },
+    "destination": {
+        "startDistanceM": 500,
+        "minMultiplier": 0.5,
+        "maxPitchReductionDeg": 18
+    },
+    "timing": {
+        "dwellSeconds": 2.5,
+        "tightenTauSeconds": 0.6,
+        "releaseTauSeconds": 1.8,
+        "altitudeRateCapMPerS": 900,
+        "pitchRateCapDegPerS": 25,
+        "postManeuverHoldSeconds": 1.2,
+        "postManeuverReleaseSeconds": 2.5,
+        "speedSmoothingTauSeconds": 1.8
+    }
+}

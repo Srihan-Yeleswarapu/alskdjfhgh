@@ -1,0 +1,1033 @@
+diff --git a/SmartSpeedCompanion/App/AppDelegate.swift b/SmartSpeedCompanion/App/AppDelegate.swift
+index 3140342..ccf451c 100644
+--- a/SmartSpeedCompanion/App/AppDelegate.swift
++++ b/SmartSpeedCompanion/App/AppDelegate.swift
+@@ -39,6 +39,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
+     ) -> Bool {
+         configureFirebase()
+         prewarmFrameworks()
++        // [WATCH] Activate the phone↔watch WCSession bridge at launch so
++        // paired watches receive state snapshots and their Start/End
++        // commands reach the shared DriveViewModel even if the user never
++        // opens the phone app. See Core/WatchSessionController.swift.
++        WatchSessionController.shared.activate()
++        WatchSessionController.shared.observe(viewModel: Self.sharedDriveViewModel)
+         return true
+     }
+ 
+diff --git a/SmartSpeedCompanion/CarPlay/CarPlayNamedLocationsController.swift b/SmartSpeedCompanion/CarPlay/CarPlayNamedLocationsController.swift
+index 5c8af3c..a5bc472 100644
+--- a/SmartSpeedCompanion/CarPlay/CarPlayNamedLocationsController.swift
++++ b/SmartSpeedCompanion/CarPlay/CarPlayNamedLocationsController.swift
+@@ -58,7 +58,7 @@ class CarPlayNamedLocationsController {
+             item.handler = { [weak self] _, completion in
+                 Task { @MainActor in
+                     self?.navigateToLocation(location)
+-                    self?.showNavigationStartedConfirmation(location.name)
++                    self?.unwindToMapAfterNavigationStart()
+                 }
+                 completion()
+             }
+@@ -103,24 +103,17 @@ class CarPlayNamedLocationsController {
+         }
+     }
+ 
+-    // MARK: - Confirmation
+-
+-    /// Show a brief confirmation alert that navigation has started.
+-    private func showNavigationStartedConfirmation(_ name: String) {
+-        // Pop to root first to keep the hierarchy shallow, then present
+-        // the confirmation alert on the clean root map template.
+-        interfaceController?.popToRootTemplate(animated: false) { [weak self] success, _ in
+-            guard let self = self, success else { return }
+-            let action = CPAlertAction(title: "OK", style: .default) { _ in }
+-            let alert = CPAlertTemplate(
+-                titleVariants: [
+-                    "Navigating to \(name)",
+-                    "Route calculated. Follow the map for turn-by-turn directions."
+-                ],
+-                actions: [action]
+-            )
+-            self.interfaceController?.presentTemplate(alert, animated: true, completion: nil)
+-        }
++    // MARK: - Unwind
++
++    /// Pops back to the map after navigation starts. Deliberately shows no
++    /// confirmation modal: the "Navigating to …" CPAlertTemplate was pure
++    /// interstitial noise with an unreliable OK button (TestFlight 2.3.0
++    /// b653). The trip preview and maneuver banner on the map are the
++    /// acknowledgment.
++    private func unwindToMapAfterNavigationStart() {
++        // Pop to root to keep the hierarchy shallow and return the driver
++        // to the live map template.
++        interfaceController?.popToRootTemplate(animated: false, completion: nil)
+     }
+ 
+     // MARK: - Empty State
+diff --git a/SmartSpeedCompanion/CarPlay/CarPlayNavigationManager.swift b/SmartSpeedCompanion/CarPlay/CarPlayNavigationManager.swift
+index ef58d19..cf89e62 100644
+--- a/SmartSpeedCompanion/CarPlay/CarPlayNavigationManager.swift
++++ b/SmartSpeedCompanion/CarPlay/CarPlayNavigationManager.swift
+@@ -135,7 +135,10 @@ public class CarPlayNavigationManager: NSObject, NavigationActionDelegate {
+ 
+         let search = MKLocalSearch(request: request)
+         search.start { response, _ in
+-            completion(Array(response?.mapItems.prefix(10) ?? []))
++            // Rank POIs above plain addresses so the CarPlay rows lead with
++            // the same places the phone's Apple Maps shows for the query
++            // (TestFlight 2.3.0 b653).
++            completion(Array(Self.poiFirst(Array(response?.mapItems ?? [])).prefix(10)))
+         }
+     }
+     
+@@ -188,13 +191,44 @@ public class CarPlayNavigationManager: NSObject, NavigationActionDelegate {
+         do {
+             let search = MKLocalSearch(request: request)
+             let response = try await search.start()
+-            return Array(response.mapItems.prefix(5))
++            // POI-first ranking — see poiFirst(_:).
++            return Array(Self.poiFirst(response.mapItems).prefix(5))
+         } catch {
+             print("Search error: \(error)")
+             return []
+         }
+     }
+     
++    // MARK: - Search result ranking
++
++    /// Ranks points of interest above plain addresses, mirroring the phone's
++    /// Apple Maps app. Raw MKLocalSearch puts an exact street-address match
++    /// (often the very road the car is parked on) at the top of the response,
++    /// so the CarPlay keyboard rows filled with "S Tumbleweed Ln" while the
++    /// phone showed Tumbleweed Park, the Recreation Center, and the Pickleball
++    /// Courts for the same query (TestFlight 2.3.0 b653). The POIs are already
++    /// in the same response — this only re-orders, with no extra request and
++    /// no dropped results. The sort is stable: ties keep MapKit's relevance
++    /// order.
++    ///
++    /// 0 = POI, 1 = other, 2 = plain address (name is the formatted address).
++    nonisolated private static func poiFirstOrderingKey(_ item: MKMapItem) -> Int {
++        if item.pointOfInterestCategory != nil { return 0 }
++        let isAddress = item.name != nil && item.name == item.placemark.title
++        return isAddress ? 2 : 1
++    }
++
++    /// Stable-sorts map items so POIs lead and plain formatted addresses trail.
++    nonisolated static func poiFirst(_ items: [MKMapItem]) -> [MKMapItem] {
++        items.enumerated()
++            .sorted { lhs, rhs in
++                let l = poiFirstOrderingKey(lhs.element)
++                let r = poiFirstOrderingKey(rhs.element)
++                return l == r ? lhs.offset < rhs.offset : l < r
++            }
++            .map { $0.element }
++    }
++
+     // MARK: - Route Calculation
+ 
+     /// Calculates up to three alternate routes (fastest first) for the
+diff --git a/SmartSpeedCompanion/CarPlay/CarPlayNavigationRootTemplate.swift b/SmartSpeedCompanion/CarPlay/CarPlayNavigationRootTemplate.swift
+index 7d990d7..9c63788 100644
+--- a/SmartSpeedCompanion/CarPlay/CarPlayNavigationRootTemplate.swift
++++ b/SmartSpeedCompanion/CarPlay/CarPlayNavigationRootTemplate.swift
+@@ -743,20 +743,23 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
+                     // CarPlay owns the add-stop flow. Do not present the
+                     // phone's RouteStopsSheet here: it covers the phone HUD
+                     // while CarPlay is searching and leaves the two surfaces
+-                    // out of sync. The CarPlay confirmation returns directly
+-                    // to the map template. Keep CarPlay's selection completion
++                    // out of sync. The flow pops back to the map template
++                    // after the add. Keep CarPlay's selection completion
+                     // behind the async route mutation so the stack cannot race
+-                    // the pop/alert transition.
++                    // the pop transition.
+                     // Complete the CarPlay row selection promptly; MapKit may
+                     // take an unbounded amount of time to calculate several
+                     // sequential legs, and holding this callback would leave
+                     // the list UI stuck. The single-flight latch serializes the
+-                    // later pop/alert transition.
++                    // later pop transition.
+                     completion()
+                     let didAddStop = await self.viewModel.addStopToRoute(mapItem, presentRouteStopsSheet: false)
+                     if didAddStop {
+-                        self.showStopAddedConfirmation(name: name)
++                        self.unwindAfterStopAdded()
+                     } else {
++                        // Only failures surface a modal; success speaks through
++                        // the recalculated route on the map (TestFlight 2.3.0
++                        // b653: "NEVER SHOW THIS SCREEN!!").
+                         self.showStopAddFailure()
+                     }
+                 }
+@@ -786,15 +789,16 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
+         )
+     }
+ 
+-    /// Brief confirmation after a stop is added, then back to the map.
++    /// Unwinds the add-stop flow back to the map after a successful add.
++    /// Deliberately shows no confirmation modal: the old stop-added
++    /// confirmation alert was noise with an unreliable OK button
++    /// (TestFlight 2.3.0 b653). The recalculated route drawn on the map is
++    /// the acknowledgment. The invalidation plus latch reset still guard
++    /// against a late category-search callback re-pushing a stale result
++    /// list after the pop.
+     @MainActor
+-    private func showStopAddedConfirmation(name: String) {
+-        // Invalidate any late category-search callback before unwinding the
+-        // flow. This guarantees a completed add cannot be followed by a stale
+-        // result list being pushed back onto the stack.
++    private func unwindAfterStopAdded() {
+         invalidateAddStopSearch()
+-        // Pop to root first to keep the hierarchy shallow, then present
+-        // the confirmation alert on the clean root map template.
+         guard let interfaceController else {
+             isAddingStopInProgress = false
+             return
+@@ -806,12 +810,6 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
+             self.activeAddStopTemplate = nil
+             self.activeStopOptionsTemplate = nil
+             self.activeStopsListTemplate = nil
+-            let action = CPAlertAction(title: "OK", style: .default) { _ in }
+-            let alert = CPAlertTemplate(
+-                titleVariants: ["Stop added: \(name)", "Tap + again to add more stops."],
+-                actions: [action]
+-            )
+-            self.interfaceController?.presentTemplate(alert, animated: true, completion: nil)
+         }
+     }
+ 
+diff --git a/SmartSpeedCompanion/Features/iOS26/LiveActivities/SpeedActivityAttributes.swift b/SmartSpeedCompanion/Features/iOS26/LiveActivities/SpeedActivityAttributes.swift
+index d09c249..1aa34fe 100644
+--- a/SmartSpeedCompanion/Features/iOS26/LiveActivities/SpeedActivityAttributes.swift
++++ b/SmartSpeedCompanion/Features/iOS26/LiveActivities/SpeedActivityAttributes.swift
+@@ -3,6 +3,19 @@ import ActivityKit
+ import Foundation
+ 
+ public struct SpeedActivityAttributes: ActivityAttributes {
++    /// [WATCH-SMART-STACK] Declares support for the watchOS 11 Smart Stack
++    /// "small" activity family so the system offers a wrist-sized rendering
++    /// of this Live Activity on a paired Apple Watch. Pairs with the
++    /// `.supplementalActivityFamilies([.small])` modifier on
++    /// `SpeedLiveActivityView` (WidgetKit silently drops a family that the
++    /// attributes struct does not also declare).
++    public static var supplementalActivityFamilies: [ActivityFamily] {
++        if #available(watchOS 11.0, iOS 18.0, *) {
++            return [.small]
++        }
++        return []
++    }
++
+     public struct ContentState: Codable, Hashable {
+         public var speed: Double
+         public var speedLimit: Int
+diff --git a/SmartSpeedCompanion/Features/iOS26/LiveActivities/SpeedLiveActivityView.swift b/SmartSpeedCompanion/Features/iOS26/LiveActivities/SpeedLiveActivityView.swift
+index 116ae1e..77f5623 100644
+--- a/SmartSpeedCompanion/Features/iOS26/LiveActivities/SpeedLiveActivityView.swift
++++ b/SmartSpeedCompanion/Features/iOS26/LiveActivities/SpeedLiveActivityView.swift
+@@ -5,6 +5,22 @@
+ // than blowing up on the combined view-graph (CI was OOM-killed during
+ // `SwiftDriver SmartSpeedCompanionWidget normal arm64`). Behavior is
+ // unchanged from the previous inlined version.
++//
++// [WATCH-SMART-STACK] watchOS 11 mirrors iPhone Live Activities onto the
++// Apple Watch Smart Stack. Two coordinated changes make the mirrored card
++// wrist-shaped instead of the system default (compact leading/trailing
++// pair + app title):
++//   1. `.supplementalActivityFamilies([.small])` on the WidgetConfiguration
++//      below — pairs with the `supplementalActivityFamilies` static declared
++//      on `SpeedActivityAttributes`.
++//   2. `SpeedLiveActivityContentView` switches on `@Environment(\.activityFamily)`:
++//      `.medium` renders the original Lock-Screen card (verbatim move of the
++//      previous body), `.small` renders a dedicated Smart Stack layout with
++//      an `isLuminanceReduced` always-on variant.
++// Shared render helpers (status colors, distance/time formatting, maneuver
++// labeling) were hoisted from struct methods to fileprivate free functions
++// so both the Widget struct (Dynamic Island) and the content struct (Lock
++// Screen + Watch) can use them without duplication.
+ import SwiftUI
+ import WidgetKit
+ import ActivityKit
+@@ -15,15 +31,197 @@ import Foundation
+ struct SpeedLiveActivityView: Widget {
+     var body: some WidgetConfiguration {
+         ActivityConfiguration(for: SpeedActivityAttributes.self) { context in
+-            lockScreenView(context: context)
++            SpeedLiveActivityContentView(context: context)
+         } dynamicIsland: { context in
+             dynamicIsland(context: context)
+         }
++        // [WATCH-SMART-STACK] Declares support for the Smart Stack "small"
++        // activity family on watchOS 11+. On iOS this modifier is inert —
++        // the Lock Screen card keeps rendering at the .medium family.
++        .supplementalActivityFamilies([.small])
++    }
++
++    // MARK: - Dynamic Island
++    private func dynamicIsland(context: ActivityViewContext<SpeedActivityAttributes>) -> DynamicIsland {
++        let measurementSystem = SpeedFormatting.measurementSystemFromAppGroup()
++        let unitShort = SpeedFormatting.unitLabelShort(measurementSystem: measurementSystem)
++        let limitDisplay = SpeedFormatting.displayLimit(
++            forMph: context.state.speedLimit,
++            measurementSystem: measurementSystem
++        )
++
++        return DynamicIsland {
++            // Inlined (not via a private helper) so the
++            // `DynamicIslandExpandedContentBuilder` can see the actual
++            // `ConditionalContent<...>` type from the `if let` branch.
++            // When wrapped in an opaque `some View` helper, the
++            // `Expanded` generic parameter of `DynamicIslandExpandedRegion`
++            // could not be inferred.
++            DynamicIslandExpandedRegion(.center) {
++                if let maneuver = context.state.nextManeuver {
++                    expandedWithManeuver(context: context, maneuver: maneuver)
++                } else {
++                    expandedWithoutManeuver(context: context, unitShort: unitShort, limitDisplay: limitDisplay)
++                }
++            }
++            DynamicIslandExpandedRegion(.bottom) {
++                expandedBottom(status: context.state.status)
++            }
++        } compactLeading: {
++            compactLeading(context: context)
++        } compactTrailing: {
++            compactTrailing(context: context)
++        } minimal: {
++            minimal(context: context)
++        }
++    }
++
++    // `expandedCenter` was inlined into the `DynamicIslandExpandedRegion(.center)`
++    // closure above to satisfy `DynamicIslandExpandedContentBuilder`'s generic
++    // `Expanded` parameter inference — see the inline note at the call site.
++
++    @ViewBuilder
++    private func expandedWithManeuver(
++        context: ActivityViewContext<SpeedActivityAttributes>,
++        maneuver: String
++    ) -> some View {
++        HStack(spacing: 20) {
++            if let img = context.state.nextManeuverImageName {
++                Image(systemName: img)
++                    .font(.title)
++                    .foregroundColor(DesignSystem.cyan)
++            }
++            VStack(alignment: .leading) {
++                Text(dynamicIslandManeuverLabel(maneuver))
++                    .font(.headline)
++                    .accessibilityLabel(maneuver)
++                Text(formatDistance(context.state.distanceToNextTurn ?? 0))
++                    .font(.subheadline.bold())
++                    .foregroundColor(DesignSystem.cyan)
++            }
++            Spacer()
++            if let eta = context.state.eta {
++                VStack(alignment: .trailing) {
++                    Text("ETA")
++                        .font(.caption)
++                    Text(eta, format: .dateTime.hour().minute())
++                        .font(.headline)
++                }
++            }
++        }
++        .padding(.horizontal)
++    }
++
++    @ViewBuilder
++    private func expandedWithoutManeuver(
++        context: ActivityViewContext<SpeedActivityAttributes>,
++        unitShort: String,
++        // See `leftColumn` for why this is `Int` (mirrors the actual
++        // return type of `SpeedFormatting.displayLimit`).
++        limitDisplay: Int
++    ) -> some View {
++        VStack {
++            Text("\(Int(context.state.speed))")
++                .font(.system(size: 60, weight: .black, design: .rounded))
++                .foregroundColor(speedStatusColor(context.state.status))
++
++            HStack(spacing: 20) {
++                Text("LIMIT: \(limitDisplay) \(unitShort)")
++                if context.state.isRecording {
++                    Text(formatElapsedTime(context.state.sessionDuration))
++                        .monospacedDigit()
++                }
++            }
++            .font(.caption.bold())
++            .foregroundColor(.gray)
++        }
++    }
++
++    @ViewBuilder
++    private func expandedBottom(status: String) -> some View {
++        let tint = speedStatusColor(status)
++        ZStack {
++            Capsule()
++                .fill(tint.opacity(0.2))
++                .frame(height: 30)
++            Text(status.uppercased())
++                .font(.caption.bold())
++                .foregroundColor(tint)
++        }
++        .padding(.horizontal)
++    }
++
++    @ViewBuilder
++    private func compactLeading(context: ActivityViewContext<SpeedActivityAttributes>) -> some View {
++        if let img = context.state.nextManeuverImageName {
++            Image(systemName: img)
++                .foregroundColor(DesignSystem.cyan)
++        } else {
++            Text("\(Int(context.state.speed))")
++                .font(.system(.headline, design: .rounded).bold())
++                .foregroundColor(speedStatusColor(context.state.status))
++        }
++    }
++
++    @ViewBuilder
++    private func compactTrailing(context: ActivityViewContext<SpeedActivityAttributes>) -> some View {
++        if context.state.nextManeuver != nil {
++            Text(formatNavigationDistance(context.state.distanceToNextTurn ?? 0))
++                .font(.caption.bold())
++                .foregroundColor(DesignSystem.cyan)
++        } else {
++            Circle()
++                .fill(speedStatusColor(context.state.status))
++                .frame(width: 8, height: 8)
++        }
++    }
++
++    @ViewBuilder
++    private func minimal(context: ActivityViewContext<SpeedActivityAttributes>) -> some View {
++        if let img = context.state.nextManeuverImageName {
++            Image(systemName: img)
++                .foregroundColor(DesignSystem.cyan)
++        } else {
++            Text("\(Int(context.state.speed))")
++                .font(.system(.caption, design: .rounded).bold())
++                .foregroundColor(speedStatusColor(context.state.status))
++        }
++    }
++}
++
++// MARK: - Lock Screen + Apple Watch Smart Stack content
++//
++// One content struct for both presentation families. `activityFamily` is
++// `.medium` on the iOS Lock Screen / StandBy and `.small` when watchOS 11
++// renders the mirrored activity in the Watch Smart Stack.
++@available(iOS 16.1, *)
++private struct SpeedLiveActivityContentView: View {
++    let context: ActivityViewContext<SpeedActivityAttributes>
++
++    // [WATCH-SMART-STACK] Family-aware presentation switch (WWDC24-10068).
++    @Environment(\.activityFamily) private var activityFamily
++    // Always-On display state on Apple Watch — the Smart Stack card keeps
++    // rendering with the wrist down, so the dimmed variant must be cheap
++    // and low-contrast rather than a static snapshot.
++    @Environment(\.isLuminanceReduced) private var isLuminanceReduced
++
++    var body: some View {
++        switch activityFamily {
++        case .small:
++            // WWDC24-10068: Smart Stack cards render light-mode by default;
++            // pin the scheme so the dark-palette status colors keep their
++            // designed contrast in both lamp states.
++            watchCard
++                .preferredColorScheme(.light)
++        default:
++            lockScreenCard
++        }
+     }
+ 
+-    // MARK: - Lock-screen / StandBy card
++    // MARK: - Lock-screen / StandBy card (medium family — moved verbatim)
++
+     @ViewBuilder
+-    private func lockScreenView(context: ActivityViewContext<SpeedActivityAttributes>) -> some View {
++    private var lockScreenCard: some View {
+         let measurementSystem = SpeedFormatting.measurementSystemFromAppGroup()
+         let unitShort = SpeedFormatting.unitLabelShort(measurementSystem: measurementSystem)
+         let limitDisplay = SpeedFormatting.displayLimit(
+@@ -33,7 +231,7 @@ struct SpeedLiveActivityView: Widget {
+ 
+         VStack(spacing: 0) {
+             Rectangle()
+-                .fill(colorForStatus(context.state.status))
++                .fill(speedStatusColor(context.state.status))
+                 .frame(height: 3)
+ 
+             HStack(alignment: .center, spacing: 16) {
+@@ -62,7 +260,7 @@ struct SpeedLiveActivityView: Widget {
+             HStack(alignment: .firstTextBaseline, spacing: 4) {
+                 Text("\(Int(context.state.speed))")
+                     .font(.system(size: 40, weight: .black, design: .rounded))
+-                    .foregroundColor(colorForStatus(context.state.status))
++                    .foregroundColor(speedStatusColor(context.state.status))
+                     .lineLimit(1)
+                     .minimumScaleFactor(0.6)
+                 Text(unitShort)
+@@ -95,7 +293,7 @@ struct SpeedLiveActivityView: Widget {
+         case "warning": label = "WARNING"
+         default:        label = "SAFE"
+         }
+-        let tint = colorForStatus(status)
++        let tint = speedStatusColor(status)
+         return Text(label)
+             .font(.system(size: 10, weight: .black, design: .monospaced))
+             .foregroundColor(.white)
+@@ -127,7 +325,7 @@ struct SpeedLiveActivityView: Widget {
+                 .font(.caption.weight(.black))
+                 .foregroundColor(DesignSystem.alertRed)
+         }
+-        Text(formatTime(context.state.sessionDuration))
++        Text(formatElapsedTime(context.state.sessionDuration))
+             .font(.system(.caption2, design: .monospaced).bold())
+             .foregroundColor(.white)
+     }
+@@ -149,196 +347,171 @@ struct SpeedLiveActivityView: Widget {
+                 .lineLimit(1)
+                 .accessibilityLabel(maneuver)
+         }
+-        Text(formatDistance(context.state.distanceToNextTurn ?? 0))
++        Text(formatNavigationDistance(context.state.distanceToNextTurn ?? 0))
+             .font(.caption2.weight(.bold))
+             .foregroundColor(DesignSystem.cyan)
+     }
+ 
+-    // MARK: - Dynamic Island
+-    private func dynamicIsland(context: ActivityViewContext<SpeedActivityAttributes>) -> DynamicIsland {
++    // MARK: - Apple Watch Smart Stack card (small family)
++
++    /// Wrist-sized layout: the speed number is the hero, the limit and a
++    /// one-line secondary readout (REC timer or next maneuver) sit beneath.
++    /// A leading status rail carries the safe/warning/over color so the
++    /// state reads at a 2-second wrist glance without any text parsing.
++    ///
++    /// Update cadence is inherited from the phone: `DriveViewModel` coalesces
++    /// Live Activity updates (~5 s tick), which the system synchronizes to
++    /// the Watch with its own battery budget (WWDC24-10068) — no extra
++    /// watch-side update work is added by this view.
++    private var watchCard: some View {
+         let measurementSystem = SpeedFormatting.measurementSystemFromAppGroup()
+         let unitShort = SpeedFormatting.unitLabelShort(measurementSystem: measurementSystem)
+         let limitDisplay = SpeedFormatting.displayLimit(
+             forMph: context.state.speedLimit,
+             measurementSystem: measurementSystem
+         )
++        let tint = speedStatusColor(context.state.status)
+ 
+-        return DynamicIsland {
+-            // Inlined (not via a private helper) so the
+-            // `DynamicIslandExpandedContentBuilder` can see the actual
+-            // `ConditionalContent<...>` type from the `if let` branch.
+-            // When wrapped in an opaque `some View` helper, the
+-            // `Expanded` generic parameter of `DynamicIslandExpandedRegion`
+-            // could not be inferred.
+-            DynamicIslandExpandedRegion(.center) {
+-                if let maneuver = context.state.nextManeuver {
+-                    expandedWithManeuver(context: context, maneuver: maneuver)
+-                } else {
+-                    expandedWithoutManeuver(context: context, unitShort: unitShort, limitDisplay: limitDisplay)
+-                }
+-            }
+-            DynamicIslandExpandedRegion(.bottom) {
+-                expandedBottom(status: context.state.status)
+-            }
+-        } compactLeading: {
+-            compactLeading(context: context)
+-        } compactTrailing: {
+-            compactTrailing(context: context)
+-        } minimal: {
+-            minimal(context: context)
+-        }
+-    }
++        return ZStack(alignment: .leading) {
++            RoundedRectangle(cornerRadius: 14, style: .continuous)
++                .fill(DesignSystem.bgCard.opacity(isLuminanceReduced ? 0.35 : 0.92))
+ 
+-    // `expandedCenter` was inlined into the `DynamicIslandExpandedRegion(.center)`
+-    // closure above to satisfy `DynamicIslandExpandedContentBuilder`'s generic
+-    // `Expanded` parameter inference — see the inline note at the call site.
++            // Status rail — dropped to a flat strip while dimmed (AOD keeps
++            // fill-free, thin shapes to avoid burn-in / redraw churn).
++            Capsule()
++                .fill(tint.opacity(isLuminanceReduced ? 0.55 : 1.0))
++                .frame(width: 5)
++                .padding(.vertical, 10)
+ 
+-    @ViewBuilder
+-    private func expandedWithManeuver(
+-        context: ActivityViewContext<SpeedActivityAttributes>,
+-        maneuver: String
+-    ) -> some View {
+-        HStack(spacing: 20) {
+-            if let img = context.state.nextManeuverImageName {
+-                Image(systemName: img)
+-                    .font(.title)
+-                    .foregroundColor(DesignSystem.cyan)
+-            }
+-            VStack(alignment: .leading) {
+-                Text(dynamicIslandManeuverLabel(maneuver))
+-                    .font(.headline)
+-                    .accessibilityLabel(maneuver)
+-                Text(formatDistance(context.state.distanceToNextTurn ?? 0))
+-                    .font(.subheadline.bold())
+-                    .foregroundColor(DesignSystem.cyan)
+-            }
+-            Spacer()
+-            if let eta = context.state.eta {
+-                VStack(alignment: .trailing) {
+-                    Text("ETA")
+-                        .font(.caption)
+-                    Text(eta, format: .dateTime.hour().minute())
+-                        .font(.headline)
++            VStack(alignment: .leading, spacing: 2) {
++                HStack(alignment: .firstTextBaseline, spacing: 3) {
++                    Text("\(Int(context.state.speed))")
++                        .font(.system(size: 44, weight: .black, design: .rounded))
++                        .monospacedDigit()
++                        .foregroundColor(tint)
++                        .lineLimit(1)
++                        .minimumScaleFactor(0.6)
++                    Text(unitShort)
++                        .font(.system(size: 12, weight: .black))
++                        .foregroundColor(.white.opacity(isLuminanceReduced ? 0.4 : 0.55))
+                 }
+-            }
+-        }
+-        .padding(.horizontal)
+-    }
+ 
+-    @ViewBuilder
+-    private func expandedWithoutManeuver(
+-        context: ActivityViewContext<SpeedActivityAttributes>,
+-        unitShort: String,
+-        // See `leftColumn` for why this is `Int` (mirrors the actual
+-        // return type of `SpeedFormatting.displayLimit`).
+-        limitDisplay: Int
+-    ) -> some View {
+-        VStack {
+-            Text("\(Int(context.state.speed))")
+-                .font(.system(size: 60, weight: .black, design: .rounded))
+-                .foregroundColor(colorForStatus(context.state.status))
++                let limitText = context.state.speedLimit == 0
++                    ? "LIMIT \u{2014}"
++                    : "LIMIT \(limitDisplay) \(unitShort)"
++                Text(limitText)
++                    .font(.system(size: 12, weight: .bold, design: .rounded))
++                    .foregroundColor(.white.opacity(isLuminanceReduced ? 0.45 : 0.7))
++                    .lineLimit(1)
+ 
+-            HStack(spacing: 20) {
+-                Text("LIMIT: \(limitDisplay) \(unitShort)")
+-                if context.state.isRecording {
+-                    Text(formatTime(context.state.sessionDuration))
+-                        .monospacedDigit()
+-                }
++                watchSecondaryLine
+             }
+-            .font(.caption.bold())
+-            .foregroundColor(.gray)
++            .padding(.leading, 14)
++            .padding(.trailing, 10)
++            .padding(.vertical, 8)
+         }
++        .frame(maxWidth: .infinity, maxHeight: .infinity)
++        .widgetBackground(Color.clear)
++        .accessibilityElement(children: .combine)
++        .accessibilityLabel(watchAccessibilityLabel)
+     }
+ 
++    /// Second row under the limit: recording duration while a session is
++    /// active, otherwise the next maneuver + distance while navigating.
+     @ViewBuilder
+-    private func expandedBottom(status: String) -> some View {
+-        let tint = colorForStatus(status)
+-        ZStack {
+-            Capsule()
+-                .fill(tint.opacity(0.2))
+-                .frame(height: 30)
+-            Text(status.uppercased())
+-                .font(.caption.bold())
+-                .foregroundColor(tint)
++    private var watchSecondaryLine: some View {
++        if context.state.isRecording {
++            HStack(spacing: 4) {
++                Circle()
++                    .fill(DesignSystem.alertRed)
++                    .frame(width: 5, height: 5)
++                    .opacity(isLuminanceReduced ? 0.6 : 1.0)
++                Text(formatElapsedTime(context.state.sessionDuration))
++                    .font(.system(size: 12, weight: .bold, design: .monospaced))
++                    .foregroundColor(.white.opacity(isLuminanceReduced ? 0.5 : 0.85))
++            }
++        } else if let maneuver = context.state.nextManeuver {
++            HStack(spacing: 4) {
++                if let img = context.state.nextManeuverImageName {
++                    Image(systemName: img)
++                        .font(.system(size: 11, weight: .bold))
++                        .foregroundColor(DesignSystem.cyan)
++                }
++                Text("\(formatNavigationDistance(context.state.distanceToNextTurn ?? 0)) · \(dynamicIslandManeuverLabel(maneuver))")
++                    .font(.system(size: 12, weight: .bold))
++                    .foregroundColor(DesignSystem.cyan)
++                    .lineLimit(1)
++                    .minimumScaleFactor(0.7)
++            }
+         }
+-        .padding(.horizontal)
+     }
+ 
+-    @ViewBuilder
+-    private func compactLeading(context: ActivityViewContext<SpeedActivityAttributes>) -> some View {
+-        if let img = context.state.nextManeuverImageName {
+-            Image(systemName: img)
+-                .foregroundColor(DesignSystem.cyan)
+-        } else {
+-            Text("\(Int(context.state.speed))")
+-                .font(.system(.headline, design: .rounded).bold())
+-                .foregroundColor(colorForStatus(context.state.status))
++    private var watchAccessibilityLabel: String {
++        var parts: [String] = []
++        switch context.state.status {
++        case "over":    parts.append("Over the speed limit")
++        case "warning": parts.append("Approaching the speed limit")
++        default:        parts.append("Within the speed limit")
+         }
+-    }
+-
+-    @ViewBuilder
+-    private func compactTrailing(context: ActivityViewContext<SpeedActivityAttributes>) -> some View {
+-        if context.state.nextManeuver != nil {
+-            Text(formatDistance(context.state.distanceToNextTurn ?? 0))
+-                .font(.caption.bold())
+-                .foregroundColor(DesignSystem.cyan)
+-        } else {
+-            Circle()
+-                .fill(colorForStatus(context.state.status))
+-                .frame(width: 8, height: 8)
++        parts.append("\(Int(context.state.speed))")
++        if context.state.speedLimit > 0 {
++            let limitDisplay = SpeedFormatting.displayLimit(
++                forMph: context.state.speedLimit,
++                measurementSystem: SpeedFormatting.measurementSystemFromAppGroup()
++            )
++            parts.append("limit \(limitDisplay)")
+         }
+-    }
+-
+-    @ViewBuilder
+-    private func minimal(context: ActivityViewContext<SpeedActivityAttributes>) -> some View {
+-        if let img = context.state.nextManeuverImageName {
+-            Image(systemName: img)
+-                .foregroundColor(DesignSystem.cyan)
+-        } else {
+-            Text("\(Int(context.state.speed))")
+-                .font(.system(.caption, design: .rounded).bold())
+-                .foregroundColor(colorForStatus(context.state.status))
++        if context.state.isRecording {
++            parts.append("recording")
++        } else if let maneuver = context.state.nextManeuver {
++            parts.append("next, \(dynamicIslandManeuverLabel(maneuver))")
+         }
++        return parts.joined(separator: ", ")
+     }
++}
+ 
+-    // MARK: - Helpers
+-
+-    /// The arrow already communicates the turn direction in the Dynamic
+-    /// Island. Keep the street target in the text so the compact card does
+-    /// not redundantly say "Turn right" and then truncate the road name.
+-    private func dynamicIslandManeuverLabel(_ instruction: String) -> String {
+-        let words = instruction.split(whereSeparator: { $0.isWhitespace })
+-        guard let ontoIndex = words.firstIndex(where: {
+-            String($0)
+-                .lowercased()
+-                .trimmingCharacters(in: .punctuationCharacters) == "onto"
+-        }), ontoIndex + 1 < words.count else {
+-            return instruction
+-        }
++// MARK: - Shared render helpers
++//
++// Hoisted from struct methods to fileprivate free functions so the Widget
++// struct (Dynamic Island) and SpeedLiveActivityContentView (Lock Screen +
++// Watch Smart Stack) share one implementation.
+ 
+-        let street = words.dropFirst(ontoIndex + 1).joined(separator: " ")
+-        return street.isEmpty ? instruction : "Onto \(street)"
++/// Status string ("safe" | "warning" | "over") → design-system color.
++fileprivate func speedStatusColor(_ status: String) -> Color {
++    switch status {
++    case "over": return DesignSystem.alertRed
++    case "warning": return DesignSystem.amber
++    default: return DesignSystem.neonGreen
+     }
++}
+ 
+-    private func formatDistance(_ distance: CLLocationDistance) -> String {
+-        SpeedFormatting.navigationDistanceLabel(
+-            forMeters: distance,
+-            measurementSystem: SpeedFormatting.measurementSystemFromAppGroup()
+-        )
++/// The arrow already communicates the turn direction in the Dynamic
++/// Island. Keep the street target in the text so the compact card does
++/// not redundantly say "Turn right" and then truncate the road name.
++fileprivate func dynamicIslandManeuverLabel(_ instruction: String) -> String {
++    let words = instruction.split(whereSeparator: { $0.isWhitespace })
++    guard let ontoIndex = words.firstIndex(where: {
++        String($0)
++            .lowercased()
++            .trimmingCharacters(in: .punctuationCharacters) == "onto"
++    }), ontoIndex + 1 < words.count else {
++        return instruction
+     }
+ 
+-    private func colorForStatus(_ status: String) -> Color {
+-        switch status {
+-        case "over": return DesignSystem.alertRed
+-        case "warning": return DesignSystem.amber
+-        default: return DesignSystem.neonGreen
+-        }
+-    }
++    let street = words.dropFirst(ontoIndex + 1).joined(separator: " ")
++    return street.isEmpty ? instruction : "Onto \(street)"
++}
+ 
+-    private func formatTime(_ interval: TimeInterval) -> String {
+-        let i = Int(interval)
+-        return String(format: "%02d:%02d", (i % 3600) / 60, i % 60)
+-    }
++fileprivate func formatNavigationDistance(_ distance: CLLocationDistance) -> String {
++    SpeedFormatting.navigationDistanceLabel(
++        forMeters: distance,
++        measurementSystem: SpeedFormatting.measurementSystemFromAppGroup()
++    )
++}
++
++fileprivate func formatElapsedTime(_ interval: TimeInterval) -> String {
++    let i = Int(interval)
++    return String(format: "%02d:%02d", (i % 3600) / 60, i % 60)
+ }
+ 
+ extension View {
+diff --git a/SmartSpeedCompanion/ViewModels/DriveViewModel.swift b/SmartSpeedCompanion/ViewModels/DriveViewModel.swift
+index c6a99f1..bf65fd5 100644
+--- a/SmartSpeedCompanion/ViewModels/DriveViewModel.swift
++++ b/SmartSpeedCompanion/ViewModels/DriveViewModel.swift
+@@ -173,6 +173,15 @@ public final class DriveViewModel: NSObject, ObservableObject {
+     @Published public var isSearchingLocally: Bool = false
+     /// History of recent search query strings.
+     @Published public var recentSearches: [String] = []
++    /// Bottom edge (global points) of the top chrome overlay — everything
++    /// drawn above the middle Spacer of the map screen (offline banner,
++    /// navigation card, Add Stops pill, nearby-amenities card, search bar).
++    /// Measured live in `MapWithHUDView` via `TopChromeBottomKey` and read by
++    /// `LiveMapView.updateUIView` to place the native compass + tracking
++    /// buttons just below the real chrome instead of a hardcoded estimate.
++    /// Zero until the first layout pass (LiveMapView then falls back to the
++    /// legacy estimate).
++    @Published public var topChromeBottom: CGFloat = 0
+     
+     // MARK: - Route Selection State    /// Indicates if we are showing the alternate route selection screen.
+     @Published public var isSelectingRoute: Bool = false
+@@ -1587,7 +1596,16 @@ public final class DriveViewModel: NSObject, ObservableObject {
+         if query.isEmpty {
+             searchCompletions = []
+             searchResults = []
+-            isSearchingLocally = false
++            // TestFlight 2.3.0 (b643) feedback (srihan.yeleswarapu@gmail.com):
++            // "I typed something into the search bar, but then backspaced all
++            // of it, when I did that, then the speed, start button, and speed
++            // limit button all came up. Don't do that." Emptying the field
++            // used to exit search mode entirely, which snapped the bottom HUD
++            // (speed readout, START pill, limit sign) back over the map while
++            // the keyboard was still up. Stay in search mode instead — the
++            // interaction only genuinely ends when the caller that owns it
++            // dismisses (X button, destination selection), and those paths
++            // clear `isSearchingLocally` themselves.
+             return
+         }
+         isSearchingLocally = true
+diff --git a/SmartSpeedCompanion/Views/Drive/LiveMapView.swift b/SmartSpeedCompanion/Views/Drive/LiveMapView.swift
+index 5c36c6c..5b165e9 100644
+--- a/SmartSpeedCompanion/Views/Drive/LiveMapView.swift
++++ b/SmartSpeedCompanion/Views/Drive/LiveMapView.swift
+@@ -272,16 +272,35 @@ public struct LiveMapView: UIViewRepresentable {
+         // offset when navigation ends. The tracking button follows
+         // automatically via its `compass.bottom + 8` constraint.
+         if let compassTop = context.coordinator.compassTopConstraint {
+-            // 2+ stops render the extra in-card Optimize row (~35 pt), and
+-            // the offline banner (+~40 pt) pushes the whole card stack down
+-            // — the drop distance grows with both so the pair always lands
+-            // below the stack. Values are conservative by design.
+-            let guidanceOffset: CGFloat = 155
+-                + (viewModel.routeStops.count >= 2 ? 35 : 0)
+-                + (network.isConnected ? 0 : 40)
++            // TestFlight 2.3.0 b653 (chslmadhuri@gmail.com): "Move the
++            // directions panel thing more up, so that these circles buttons
++            // are not covered." The b640 fix dropped the pair by a hardcoded
++            // estimate (155 + 35 for 2+ stops + 40 offline) that went stale
++            // whenever the card stack gained or lost a row (ETA line, stops
++            // badge, Add Stops pill, nearby-amenities card…), letting the
++            // compass end up half-tucked under the chrome again. MapWithHUD
++            // View now MEASURES the top chrome's real bottom edge every
++            // layout pass (`TopChromeBottomKey`) and publishes it on the view
++            // model; we sit 14 pt below it. Falls back to the legacy estimate
++            // only until the first SwiftUI layout pass (topChromeBottom == 0).
++            let measured = viewModel.topChromeBottom
++            // `measured` is in global (window) space; the constraint pins the
++            // compass to the map's safe-area top, so subtract the map's own
++            // safe-area inset to convert. Never float ABOVE the search-row
++            // rest position.
++            let guidanceOffset = measured > 0
++                ? max(measured - uiView.safeAreaInsets.top, 72)
++                : 155
++                    + (viewModel.routeStops.count >= 2 ? 35 : 0)
++                    + (network.isConnected ? 0 : 40)
+             let target: CGFloat = viewModel.isNavigating ? guidanceOffset : 72
+             if abs(compassTop.constant - target) > 0.5 {
+                 compassTop.constant = target
++                // Re-layout immediately — waiting for the next SwiftUI-driven
++                // pass left the first navigation frame with the pair still
++                // pinned at its old offset, exactly the overlap the tester
++                // screenshotted.
++                uiView.layoutIfNeeded()
+             }
+         }
+ 
+diff --git a/SmartSpeedCompanion/Views/Drive/MapWithHUDView.swift b/SmartSpeedCompanion/Views/Drive/MapWithHUDView.swift
+index c00a573..84b280b 100644
+--- a/SmartSpeedCompanion/Views/Drive/MapWithHUDView.swift
++++ b/SmartSpeedCompanion/Views/Drive/MapWithHUDView.swift
+@@ -2,6 +2,22 @@ import SwiftUI
+ import MapKit
+ import UIKit
+ 
++/// Reports the bottom edge (global-space points) of MapWithHUDView's top
++/// chrome — the whole Group above the middle Spacer (offline banner,
++/// navigation card, Add Stops pill, nearby-amenities card, search bar…).
++/// Consumed by `LiveMapView.updateUIView` to drop the native compass +
++/// tracking buttons just below that chrome. Replaces the hardcoded
++/// 155 + 35 + 40 estimate that kept going stale every time the card stack
++/// gained or lost a row (TestFlight 2.3.0 b640, then again b653:
++/// chslmadhuri@gmail.com — "Move the directions panel thing more up, so that
++/// these circles buttons are not covered.").
++struct TopChromeBottomKey: PreferenceKey {
++    static var defaultValue: CGFloat = 0
++    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
++        value = max(value, nextValue())
++    }
++}
++
+ public struct MapWithHUDView: View {
+     @EnvironmentObject var driveViewModel: DriveViewModel
+     @Environment(\.horizontalSizeClass) var hSizeClass
+@@ -62,7 +78,7 @@ public struct MapWithHUDView: View {
+                                 .transition(.move(edge: .bottom).combined(with: .opacity))
+                         }
+ 
+-                        // Look Around + Apple Maps shortcut row shown right
++                        // "Add Stops" shortcut pill shown right
+                         // under the navigation instruction card while we are
+                         // actively navigating to a destination.
+                         if driveViewModel.isNavigating, let dest = driveViewModel.destination {
+@@ -119,6 +135,29 @@ public struct MapWithHUDView: View {
+                     }
+                     } // Group — top section
+                     .offset(y: -35)
++                    // Measure the REAL bottom edge of the top chrome and
++                    // publish it for LiveMapView's compass/tracking-button
++                    // drop constraint. Offsets are purely visual and never
++                    // affect layout, so the measured frame IS the frame the
++                    // user sees; the -35 mirrors the visual offset above
++                    // (which layout does not know about). While guiding, add
++                    // 14 pt of breathing room so the compass lands clear of
++                    // the card's bottom glass corner instead of touching it.
++                    .background(
++                        GeometryReader { chromeGeo in
++                            Color.clear.preference(
++                                key: TopChromeBottomKey.self,
++                                value: max(chromeGeo.frame(in: .global).maxY - 35
++                                    + (driveViewModel.isNavigating || driveViewModel.isSelectingRoute ? 14 : 0),
++                                    0)
++                            )
++                        }
++                    )
++                    .onPreferenceChange(TopChromeBottomKey.self) { bottom in
++                        if driveViewModel.topChromeBottom != bottom {
++                            driveViewModel.topChromeBottom = bottom
++                        }
++                    }
+ 
+                     Spacer()
+ 
+@@ -752,8 +791,11 @@ fileprivate struct SearchBarView: View {
+         dismissKeyboard()
+ 
+         guard !query.isEmpty else {
++            // Empty Search submit just collapses the keyboard. Stay in search
++            // mode (TestFlight 2.3.0 b643: backspacing to empty must not snap
++            // the bottom HUD back over the map) — the X button is the
++            // deliberate exit, and it clears `isSearchingLocally` itself.
+             isShowingSubmittedResults = false
+-            driveViewModel.isSearchingLocally = false
+             return
+         }
+ 
+@@ -1280,28 +1322,36 @@ fileprivate struct NavigationShortcutsRow: View {
+     @EnvironmentObject var driveViewModel: DriveViewModel
+     let destination: MKMapItem
+ 
++    // The row is intentionally NOT horizontally scrollable.
++    // It once held several shortcut pills and panned side to side on
++    // purpose; with only the single in-app "Add Stops" action left (the
++    // external Apple Maps handoff was removed as redundant), the lone pill
++    // just rubber-banded under the finger. TestFlight 2.3.0 (b653)
++    // feedback (chslmadhuri@gmail.com): "Horizontal to add stops button,
++    // if I swipe, the add stop buttons scrolls side to side. This was on
++    // purpose many features back, but not in use anymore. Remove this."
++    // A plain HStack keeps the button with no pan gesture.
+     var body: some View {
+-        ScrollView(.horizontal, showsIndicators: false) {
+-            HStack(spacing: 10) {
+-                // Keep only the in-app stop action in this row. The external
+-                // Apple Maps handoff was a redundant button in the navigation
+-                // card and the latest TestFlight feedback explicitly asks for
+-                // it to be removed.
+-                Button(action: {
+-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+-                    driveViewModel.showRouteStopsSheet = true
+-                }) {
+-                    Label("Add Stops", systemImage: "plus.circle")
+-                        .labelStyle(.titleAndIcon)
+-                        .font(.system(size: 13, weight: .bold))
+-                        .padding(.horizontal, 14)
+-                        .padding(.vertical, 10)
+-                        .foregroundColor(.white)
+-                        .liquidGlassChip(cornerRadius: 18, interactive: true)
+-                }
++        // Trailing Spacer pins the pill leading: the overlay VStack uses
++        // default center alignment, and the old full-width scroll container
++        // held this row out to both edges. Without the Spacer the pill
++        // would drift to the horizontal center after losing that container.
++        HStack(spacing: 0) {
++            Button(action: {
++                UIImpactFeedbackGenerator(style: .light).impactOccurred()
++                driveViewModel.showRouteStopsSheet = true
++            }) {
++                Label("Add Stops", systemImage: "plus.circle")
++                    .labelStyle(.titleAndIcon)
++                    .font(.system(size: 13, weight: .bold))
++                    .padding(.horizontal, 14)
++                    .padding(.vertical, 10)
++                    .foregroundColor(.white)
++                    .liquidGlassChip(cornerRadius: 18, interactive: true)
+             }
+-            .padding(.horizontal, 4)
++            Spacer()
+         }
++        .padding(.horizontal, 4)
+     }
+ }
+ 

@@ -15,25 +15,47 @@ public struct OverspeedHeatMapView: UIViewRepresentable {
     }
     
     public func updateUIView(_ uiView: MKMapView, context: Context) {
-        // Simple map diffing strategy (clear and replace).
-        // Since analytics is typically static per-session view, simple replacement is acceptable here.
+        var fingerprint = Hasher()
+        fingerprint.combine(session.id)
+        fingerprint.combine(session.readings.count)
+        if let first = session.readings.first {
+            fingerprint.combine(first.timestamp)
+        }
+        if let last = session.readings.last {
+            fingerprint.combine(last.timestamp)
+        }
+        let renderedFingerprint = fingerprint.finalize()
+        guard renderedFingerprint != context.coordinator.lastRenderedFingerprint else {
+            return
+        }
+        context.coordinator.lastRenderedFingerprint = renderedFingerprint
+
         uiView.removeOverlays(uiView.overlays)
         
         var rect = MKMapRect.null
         
-        for reading in session.readings {
+        // The XR reports show MapKit spending hundreds of milliseconds in
+        // overlay creation on this screen. A heat map does not need one
+        // MKCircle per GPS sample, so cap the first render at 300 evenly
+        // spaced points. The stable fingerprint above ensures those overlays
+        // are not rebuilt for unrelated SwiftUI updates.
+        let readings = session.readings
+        let count = readings.count
+        let maxOverlayPoints = 300
+        let strideValue = max(1, count / maxOverlayPoints)
+        
+        for i in stride(from: 0, to: count, by: strideValue) {
+            let reading = readings[i]
             let coord = CLLocationCoordinate2D(latitude: reading.latitude, longitude: reading.longitude)
             let point = MKMapPoint(coord)
             let pointRect = MKMapRect(x: point.x, y: point.y, width: 0.1, height: 0.1)
             rect = rect.union(pointRect)
             
-            // MapKit Circles
             let circle = HeatCircle(center: coord, radius: 12, isOver: reading.overLimit)
             uiView.addOverlay(circle)
         }
         
         if !rect.isNull {
-            // First load zoom fix
             let padding = UIEdgeInsets(top: 40, left: 40, bottom: 40, right: 40)
             uiView.setVisibleMapRect(rect, edgePadding: padding, animated: false)
         }
@@ -45,6 +67,11 @@ public struct OverspeedHeatMapView: UIViewRepresentable {
     
     public class Coordinator: NSObject, MKMapViewDelegate {
         var parent: OverspeedHeatMapView
+        /// Analytics sits inside a tab that can re-render whenever the shared
+        /// drive model publishes a GPS update. Rebuilding up to 1,000 circle
+        /// overlays for each unrelated update blocks the same UIKit run loop
+        /// as the live route renderer, so keep a stable session fingerprint.
+        var lastRenderedFingerprint: Int?
         
         init(_ parent: OverspeedHeatMapView) {
             self.parent = parent

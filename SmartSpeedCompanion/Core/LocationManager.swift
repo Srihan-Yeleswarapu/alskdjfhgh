@@ -1,58 +1,215 @@
 import Foundation
-import CoreLocation
+// `@preconcurrency`: CoreLocation's CLLocationManager / CLHeading / CLLocation
+// are not yet Sendable-annotated in the SDK, but they are confined to the
+// main run loop here (the manager is created on the main actor). The import
+// downgrades the strict-concurrency captures in the delegate witnesses from
+// errors to warnings instead of forcing value-by-value re-plumbing.
+@preconcurrency import CoreLocation
 import Combine
 
 /// A wrapper around CLLocationManager for high-accuracy GPS and navigation context.
+///
+/// `@MainActor`: CLLocationManager and its delegate callbacks are main-thread
+/// only (the delegate protocol is @MainActor-annotated in the SDK), and every
+/// owner (DriveViewModel, SpeedEngine, SessionRecorder, HEREGeofenceManager)
+/// is already @MainActor. Delegate methods therefore assign @Published state
+/// directly instead of hopping through DispatchQueue.main — the GCD hop was
+/// what triggered Swift 6's "sending 'self' risks causing data races" errors.
+@MainActor
 public final class LocationManager: NSObject, ObservableObject {
+    /// Maximum horizontal error accepted for location-driven map and
+    /// speed-limit work. Keep this policy shared with SpeedEngine so a fix
+    /// accepted by Core Location cannot be silently excluded from lookup.
+    ///
+    /// `nonisolated`: an immutable Sendable constant, readable from any
+    /// isolation domain (SpeedEngine's `nonisolated` eligibility helper
+    /// references it).
+    public nonisolated static let maximumAcceptedHorizontalAccuracy: CLLocationAccuracy = 100.0
+
     private let manager = CLLocationManager()
     
     @Published public var latestLocation: CLLocation?
+    @Published public var latestHeading: CLHeading?
     @Published public var authorizationStatus: CLAuthorizationStatus = .notDetermined
+    /// True only while an explicit recording/navigation session owns the GPS.
+    /// Keeping this state here prevents queued Core Location or simulator
+    /// callbacks from leaking location data into the app while idle.
+    public private(set) var isUpdatingLocation = false
+    
+    #if DEBUG || DEVELOPER_BUILD
+    @Published public var isMockMode: Bool = false
+    private var mockCancellable: AnyCancellable?
+    #endif
     
     public override init() {
         super.init()
         manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
         manager.distanceFilter = kCLDistanceFilterNone
-        manager.allowsBackgroundLocationUpdates = true // Requires 'location' in UIBackgroundModes
-        manager.showsBackgroundLocationIndicator = true
+        // Location is demand-driven: no GPS or background indicator is enabled
+        // until a recording/navigation session explicitly starts. The app still
+        // declares the location background mode because an active session must
+        // continue safely while the phone is locked or the app is backgrounded.
+        manager.allowsBackgroundLocationUpdates = false
+        manager.showsBackgroundLocationIndicator = false
+
+        // Navigation-grade heading
+        manager.headingFilter = 2.0 // Update every 2 degrees
+
+        // Apply user-selected GPS accuracy (set before starting updates)
+        applyAccuracyMode()
+
+        #if DEBUG || DEVELOPER_BUILD
+        setupMockSubscription()
+        // In the iOS Simulator there is no real GPS. Auto-engage mock mode
+        // so the app is usable the moment the user hits Run. Real-device
+        // users still start in non-mock mode and toggle from the Developer
+        // tab. isMockMode defaults to false; we only flip it for simulator.
+        #if targetEnvironment(simulator)
+        self.isMockMode = true
+        DebugLogger.shared.log("LocationManager: auto-engaged mock mode (iOS Simulator detected).")
+        #endif
+        #endif
+
+        DebugLogger.shared.log("LocationManager initialized.")
     }
     
+    #if DEBUG || DEVELOPER_BUILD
+    private func setupMockSubscription() {
+        mockCancellable = NotificationCenter.default.publisher(for: .didUpdateMockLocation)
+            .compactMap { $0.object as? CLLocation }
+            .sink { [weak self] location in
+                // The sink closure is nonisolated (Combine delivers on the
+                // posting thread); hop to the manager's @MainActor isolation
+                // before touching @Published state.
+                Task { @MainActor [weak self] in
+                    guard let self, self.isMockMode, self.isUpdatingLocation else { return }
+                    self.latestLocation = location
+                }
+            }
+    }
+    #endif
+    
+    /// Applies the current gpsAccuracyMode preference from UserDefaults.
+    /// Call this any time the user changes the accuracy setting.
+    public func applyAccuracyMode() {
+        let mode = UserDefaults.standard.string(forKey: "gpsAccuracyMode") ?? "navigation"
+        if mode == "balanced" {
+            // Balanced: saves battery / heat at the cost of ~5-10m accuracy
+            manager.desiredAccuracy = kCLLocationAccuracyBest
+            DebugLogger.shared.log("LocationManager: Accuracy set to BALANCED (Best)")
+        } else {
+            // Default: full navigation-grade accuracy
+            manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
+            DebugLogger.shared.log("LocationManager: Accuracy set to NAVIGATION (BestForNavigation)")
+        }
+    }
+    
+    /// Requests While-Using authorization, suitable for the first-launch
+    /// permission prompt shown after the tutorial. Upgraded to Always later
+    /// when the user starts a driving session (for CarPlay background ops).
+    /// In the iOS Simulator the location-permission dialog is theatre
+    /// (the mock-location path doesn't need it) and a "Don't Allow" tap
+    /// silently breaks the flow. Skip the request entirely on simulator.
+    public func requestWhenInUseAuthorization() {
+        #if targetEnvironment(simulator)
+        return
+        #else
+        manager.requestWhenInUseAuthorization()
+        DebugLogger.shared.log("LocationManager: Requesting WhenInUse Authorization.")
+        #endif
+    }
+
     /// Requests Always authorization, required for CarPlay background operation.
     public func requestAuthorization() {
+        // In the iOS Simulator the location-permission dialog is theatre
+        // (the mock-location path doesn't need it) and a "Don't Allow" tap
+        // silently breaks the flow. Skip the request entirely on simulator.
+        #if targetEnvironment(simulator)
+        return
+        #else
         manager.requestAlwaysAuthorization()
+        DebugLogger.shared.log("LocationManager: Requesting Always Authorization.")
+        #endif
     }
     
     public func startUpdatingLocation() {
+        isUpdatingLocation = true
         manager.startUpdatingLocation()
+        manager.startUpdatingHeading()
+        DebugLogger.shared.log("LocationManager: Started updating location and heading.")
     }
     
     public func stopUpdatingLocation() {
+        isUpdatingLocation = false
         manager.stopUpdatingLocation()
+        manager.stopUpdatingHeading()
+        // Delegate callbacks are also gated by `isUpdatingLocation`, so a
+        // queued final fix cannot re-enter the app after this point. Keep the
+        // last fix available for final-session persistence and map cleanup;
+        // retaining a value is not active location monitoring.
+        DebugLogger.shared.log("LocationManager: Stopped updating location and heading.")
+    }
+    
+    /// Dynamically enables or disables background location updates.
+    /// Call with `true` when starting a session (so the Dynamic Island
+    /// shows location during the drive), and `false` when ending a session
+    /// (so the background indicator hides when not actively recording).
+    /// Has no effect if location updates are not active.
+    public func setBackgroundUpdates(_ enabled: Bool) {
+        // Background execution is never meaningful without an active GPS
+        // owner. Ignore accidental enables from route-preview code and keep
+        // the indicator disabled until `startUpdatingLocation()` has claimed
+        // the resource for an explicit session.
+        let shouldEnable = enabled && isUpdatingLocation
+        manager.allowsBackgroundLocationUpdates = shouldEnable
+        manager.showsBackgroundLocationIndicator = shouldEnable
+        DebugLogger.shared.log("LocationManager: Background updates \(shouldEnable ? "ENABLED" : "DISABLED")")
     }
 }
 
 extension LocationManager: CLLocationManagerDelegate {
-    public func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        DispatchQueue.main.async {
-            self.authorizationStatus = manager.authorizationStatus
+    /// CLLocationManagerDelegate's requirements are nonisolated, so the
+    /// witnesses must be too. The manager is created on the main actor, which
+    /// pins its delegate callbacks to the main run loop — so each witness
+    /// re-enters the class's @MainActor state synchronously via
+    /// `MainActor.assumeIsolated` (no async hop, and the non-Sendable
+    /// CLLocation/CLHeading arguments never cross an actor boundary).
+    nonisolated public func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        // CLAuthorizationStatus is a Sendable C enum — read it before the
+        // actor hop so only the value (not the CLLocationManager) is captured.
+        let status = manager.authorizationStatus
+        MainActor.assumeIsolated {
+            authorizationStatus = status
+            DebugLogger.shared.log("LocationManager: Authorization status changed to \(status.rawValue).")
         }
     }
     
-    public func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard let location = locations.last else { return }
-        DispatchQueue.main.async {
-            self.latestLocation = location
-        }
-        
-        Task { @MainActor in
-            if location.horizontalAccuracy > 0 && location.horizontalAccuracy < 50 {
-                await SpeedLimitBrain.shared.onLocationUpdate(location)
-            }
+    nonisolated public func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        MainActor.assumeIsolated {
+            #if DEBUG || DEVELOPER_BUILD
+            if isMockMode { return }
+            #endif
+            
+            guard isUpdatingLocation, let location = locations.last else { return }
+            // Filter out stale or wildly inaccurate fixes to prevent map-going-bonkers
+            guard location.horizontalAccuracy >= 0,
+                  location.horizontalAccuracy < Self.maximumAcceptedHorizontalAccuracy else { return }
+            latestLocation = location
+            // NOTE: Per-update coordinate logging removed to reduce heat from constant 
+            // log-flush I/O on devices processing ~1 GPS update per second.
         }
     }
     
-    public func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+    nonisolated public func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+        MainActor.assumeIsolated {
+            guard isUpdatingLocation else { return }
+            latestHeading = newHeading
+            // Heading updates fire continuously while driving — avoid logging here to prevent heat
+        }
+    }
+
+    nonisolated public func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        DebugLogger.shared.log("LocationManager ERROR: \(error.localizedDescription)")
         print("LocationManager failed with error: \(error.localizedDescription)")
     }
 }

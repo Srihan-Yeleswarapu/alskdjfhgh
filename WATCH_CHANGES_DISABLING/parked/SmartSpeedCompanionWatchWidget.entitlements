@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      [WATCH] Watch complications extension entitlements. The single App
+      Group is the ONLY entitlement needed — the extension reads the same
+      watch-local suite (`group.com.smartspeedcompanion.app.watch`) that
+      `WatchDriveViewModel.writeComplicationSnapshot()` writes on session
+      start/end. MANUAL SETUP: mirror of the watch app — enable the group
+      on App ID `com.speedsense.app.watchkitapp.SpeedWidget` and generate
+      the `Speedio Watch Widget App Store` profile (see WATCH_SETUP.md).
+    -->
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>group.com.smartspeedcompanion.app.watch</string>
+    </array>
+</dict>
+</plist>

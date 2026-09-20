@@ -2,29 +2,21 @@ import SwiftUI
 import SwiftData
 import ActivityKit
 import WidgetKit
-import FirebaseCore
+// [FIREBASE-DISABLED 2026-09-16] import FirebaseCore
 
 @main
-struct SmartSpeedCompanionApp: App {
+struct SpeedioApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-
+    
+    // Use the shared ModelContainer from AppDelegate - it's already initialized
+    // and available before any scene (including CarPlay) connects
     var body: some Scene {
         WindowGroup {
-            RootDriveView()
+            AppRootView()
+                .environmentObject(AppDelegate.sharedAppState)
+                .environmentObject(AppDelegate.sharedDriveViewModel)
+                .modelContainer(AppDelegate.sharedModelContainer)
                 .preferredColorScheme(.dark)
-                .modelContainer(for: [DriveSession.self, SpeedReading.self, RoadSegment.self])
         }
-    }
-}
-
-private struct RootDriveView: View {
-    @Environment(\.modelContext) private var modelContext
-
-    var body: some View {
-        DriveRootView()
-            .environmentObject(AppDelegate.sharedDriveViewModel)
-            .onAppear {
-                AppDelegate.sharedDriveViewModel.configureModelContext(modelContext)
-            }
     }
 }

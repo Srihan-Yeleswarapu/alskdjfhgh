@@ -6,19 +6,14 @@ import UserNotifications
 @MainActor
 public final class CrashDetectionManager: ObservableObject {
     private let motionManager = CMMotionManager()
-    private let brain: SpeedLimitBrain
+    private let speedEngine: SpeedEngine
     private let sessionRecorder: SessionRecorder
     
-    public init(brain: SpeedLimitBrain, sessionRecorder: SessionRecorder) {
-        self.brain = brain
+    public init(speedEngine: SpeedEngine, sessionRecorder: SessionRecorder) {
+        self.speedEngine = speedEngine
         self.sessionRecorder = sessionRecorder
         startCrashDetection()
     }
-    
-//   private init(speedEngine: startEngine, sessionRecorder: SessionRecorder) {
-//       self.speedEngine = speedEngine
-//       self.sessionRecorder = sessionRecorder
-//       startCrashDetection()
     
     private func startCrashDetection() {
         guard motionManager.isAccelerometerAvailable else { return }

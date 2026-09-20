@@ -7,6 +7,14 @@ public final class DriveSession {
     @Attribute(.unique) public var id: UUID
     public var startTime: Date
     public var endTime: Date?
+    public var startLocationName: String?
+    public var endLocationName: String?
+    public var destinationPlaceID: String?
+    public var isStarred: Bool?
+    public var vehicleProfileId: String?
+    public var vehicleName: String?
+    /// Custom user-set title that overrides the computed title.
+    public var customTitle: String?
     
     @Relationship(deleteRule: .cascade)
     public var readings: [SpeedReading]
@@ -15,6 +23,32 @@ public final class DriveSession {
         self.id = id
         self.startTime = startTime
         self.readings = readings
+        self.isStarred = false
+    }
+    
+    public var title: String {
+        // If the user has set a custom title, use it
+        if let custom = customTitle, !custom.isEmpty {
+            return custom
+        }
+        
+        let dayFormatter = DateFormatter()
+        dayFormatter.dateFormat = "MMM d"
+        let timeFormatter = DateFormatter()
+        timeFormatter.dateFormat = "h:mm a"
+        
+        let dayStr = dayFormatter.string(from: startTime)
+        let timeStr = timeFormatter.string(from: startTime)
+        
+        let suffix = "at \(timeStr) on \(dayStr)"
+        
+        if let start = startLocationName, let end = endLocationName, start != "Unknown Location", end != "Unknown Location" {
+            return "\(start) to \(end) \(suffix)"
+        } else if let start = startLocationName, start != "Unknown Location" {
+            return "\(start) \(suffix)"
+        } else {
+            return "Drive Session \(suffix)"
+        }
     }
     
     /// Computes the duration of the drive session in seconds.
@@ -45,6 +79,21 @@ public final class DriveSession {
         return longest
     }
     
+    /// Computes the maximum speed recorded during the session.
+    public var maxSpeed: Double {
+        guard !readings.isEmpty else { return 0.0 }
+        return readings.map(\.speed).max() ?? 0.0
+    }
+
+    /// Computes the maximum amount (in mph) the user exceeded the speed limit.
+    /// Returns 0 if never over the limit or if there are no readings.
+    public var maxOverLimit: Double {
+        guard !readings.isEmpty else { return 0.0 }
+        let overReadings = readings.filter { $0.overLimit && $0.speedLimit > 0 }
+        guard !overReadings.isEmpty else { return 0.0 }
+        return overReadings.map { $0.speed - Double($0.speedLimit) }.max() ?? 0.0
+    }
+
     /// Computes the average speed over the limit for only the intervals where the user was speeding.
     public var avgMphOverLimit: Double {
         let overReadings = readings.filter { $0.overLimit }
@@ -53,10 +102,20 @@ public final class DriveSession {
         return totalOver / Double(overReadings.count)
     }
     
-    /// Computes the driving score based on the prototype's formula: max(0, min(100, 100 - (percentTimeOver * 1.5)))
+    /// Computes the driving score based on a comprehensive penalty formula.
     public var drivingScore: Int {
+        guard !readings.isEmpty else { return 100 }
+        
         let percentTimeOver = (1.0 - percentWithinLimit) * 100.0
-        let score = 100.0 - (percentTimeOver * 1.5)
+        let avgOver = avgMphOverLimit
+        
+        // Severity multiplier: increases if the driver sped heavily when they were over the limit
+        let severityMultiplier = 1.0 + (avgOver / 8.0)
+        
+        // Streak penalty: penalizes long continuous stretches of speeding
+        let streakPenalty = min(20.0, Double(longestOverstreak) / 5.0)
+        
+        let score = 100.0 - (percentTimeOver * severityMultiplier) - streakPenalty
         return Int(max(0, min(100, score)))
     }
 }

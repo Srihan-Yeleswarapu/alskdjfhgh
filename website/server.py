@@ -1,0 +1,1358 @@
+#!/usr/bin/env python3
+"""
+website/server.py -- Stdlib HTTP server that proxies Speedio's active
+speed-limit providers so the website can show the answer side-by-side per
+provider. The former Arizona SQLite implementation is retained below as
+archival reference only and is never called by the active routes.
+
+Endpoints
+---------
+  GET  /                                     index.html
+  GET  /health                               liveness probe
+  GET  /api/reverse-geocode?lat=&lon=        Nominatim /reverse proxy,
+                                              50m grid cache + 1 req/sec
+                                              throttle (per Nominatim policy)
+  POST /api/speedlimit-az       410 archived/disabled (legacy route only)
+  POST /api/speedlimit-arcgis   {lat, lon, heading?}
+  POST /api/speedlimit-overpass {lat, lon, heading?}
+
+Archived Python parity helpers
+------------------------------
+The `name_match_score`, `snap`, and related geometry helpers below are retained
+only for the historical regression tests (`test_snap_named.py` and
+`test_snap_corridor.py`) and future all-states replacement work. They are not
+called by the HTTP orchestrator, do not open a database, and are not an active
+speed-limit provider. The production pipeline is HERE Batch → HERE REST →
+ArcGIS → Overpass → No Data.
+
+If the archived AZ implementation is ever reactivated, update these helpers
+and their tests alongside the Swift implementation; do not add them back to
+`orchestrate_speed_limit` without replacing the dataset with nationwide data.
+
+Stdlib only. Run:
+    python website/server.py
+Then open http://127.0.0.1:8089/.
+"""
+
+import json
+import math
+import os
+import re
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+# ---- ARCHIVE ONLY: Arizona SQLite mirror constants --------------------------
+# These constants support the small, tested `snap()` reference helpers below.
+# They are intentionally outside the active HTTP/provider path. No active route
+# opens SQLite or calls these helpers.
+SNAP_RADIUS_M = 20.0
+SKIP_DIAGONAL_DEGREES = 1.0
+SCORE_BASE_OFFSET = 25.0
+NAME_MATCH_BONUS_MAGNITUDE = 10000.0
+NAME_MATCH_SPATIAL_GATE_M = 200.0
+NAME_MATCH_THRESHOLD = 0.5
+AMBIGUOUS_CORRIDOR_ASPECT_RATIO = 3.0
+AMBIGUOUS_CORRIDOR_OFFSET_M = 250.0
+AMBIGUOUS_CORRIDOR_PENALTY = 2000.0
+PASS2_LOCAL_ROAD_RADIUS_M = 1000.0
+EARTH_M_PER_DEG_LAT = 111_111.0
+GEOCODE_GRID_DEGREES = 0.0005  # Swift: RoadGeocoder.gridPrecision (~50m)
+GEOCODE_TTL_SECONDS = 24 * 3600
+NOMINATIM_MIN_INTERVAL_S = 1.1  # Nominatim /reverse policy: 1 req/sec max
+NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
+USER_AGENT = "Speedio-WebLookup/1.0 (research; speedsenseapp@gmail.com)"
+
+PORT = int(os.environ.get('PORT', '8089'))
+# HERE Platform API Key — set via env var or bundled config.
+# Mirrors HERECredentialStore which reads from HERE-Config.plist.
+HERE_API_KEY = os.environ.get('HERE_API_KEY', '').strip()
+if not HERE_API_KEY:
+    # Fallback: try loading from a config file next to server.py
+    config_path = os.path.join(os.path.dirname(__file__), 'here_config.json')
+    if os.path.exists(config_path):
+        try:
+            with open(config_path) as f:
+                cfg = json.load(f)
+            HERE_API_KEY = (cfg.get('api_key') or '').strip()
+        except Exception:
+            pass
+if not HERE_API_KEY:
+    # Try reading from parent project's plist example
+    plist_path = os.path.normpath(os.path.join(
+        os.path.dirname(__file__), '..',
+        'SmartSpeedCompanion', 'Configuration', 'HERE-Config.plist.example',
+    ))
+    if os.path.exists(plist_path):
+        try:
+            with open(plist_path) as f:
+                content = f.read()
+            m = re.search(r'<string>(.*?)</string>', content)
+            if m:
+                val = m.group(1).strip()
+                if val and val != 'YOUR_HERE_API_KEY':
+                    HERE_API_KEY = val
+        except Exception:
+            pass
+
+
+# ---- Swift<>Python mirror: RoadNameMatcher constants
+# Mirrors SmartSpeedCompanion/Core/RoadNameMatcher.swift 1:1.
+SUFFIX_ALIASES = {
+    "ROAD": "RD", "AVENUE": "AVE", "BOULEVARD": "BLVD",
+    "HIGHWAY": "HWY", "FREEWAY": "FWY", "EXPRESSWAY": "EXPY",
+    "DRIVE": "DR", "LANE": "LN", "COURT": "CT",
+    "STREET": "ST", "PLACE": "PL", "PARKWAY": "PKWY",
+    "TERRACE": "TER", "CIRCLE": "CIR",
+}
+DIRECTION_PREFIXES = {
+    "W", "WEST", "E", "EAST", "N", "NORTH", "S", "SOUTH",
+    "NW", "NORTHWEST", "NE", "NORTHEAST", "SW", "SOUTHWEST", "SE", "SOUTHEAST",
+}
+STRICT_FAMILY_KEYWORDS = {
+    "INTERSTATE": "I", "INTERSTATE HIGHWAY": "I",
+    "US": "US", "UNITED STATES": "US",
+    "US HIGHWAY": "US", "US ROUTE": "US",
+}
+GENERIC_TYPE_KEYWORDS = {
+    "STATE ROUTE", "STATE HIGHWAY", "ROUTE", "HIGHWAY",
+    "FREEWAY", "EXPRESSWAY", "TURNPIKE", "PARKWAY",
+}
+
+
+# ---- ARCHIVE ONLY: historical matcher functions ----------------------------
+# Keep these functions for regression coverage and future replacement work.
+# They must remain unreachable from `orchestrate_speed_limit` and HTTP handlers.
+
+def segment_distance_m(minx, maxx, miny, maxy, lat, lon):
+    """Archived reference for RoadSegment.distance(to:).
+    It is retained for regression tests and future replacement work only.
+    """
+    dx = max(0.0, minx - lon, lon - maxx)
+    dy = max(0.0, miny - lat, lat - maxy)
+    if dx == 0.0 and dy == 0.0:
+        return 0.0
+    cos_lat = math.cos(math.radians(lat))
+    lat_m = dy * EARTH_M_PER_DEG_LAT
+    lon_m = dx * EARTH_M_PER_DEG_LAT * cos_lat
+    return math.sqrt(lat_m * lat_m + lon_m * lon_m)
+
+
+def centerline_offset_m(minx, maxx, miny, maxy, lat, lon):
+    """Mirror RoadSegment.centerlineOffset(to:) in
+    ArizonaSpeedLimitService.swift. Returns the perpendicular offset from
+    the inferred centerline scaled by 1 - min(w,h)/max(w,h). Clamped at
+    minor-axis half-width for bbox-edge continuity.
+    """
+    w = maxx - minx
+    h = maxy - miny
+    cx = minx + w / 2.0
+    cy = miny + h / 2.0
+
+    in_dx = 0.0
+    in_dy = 0.0
+    if w > h and w > 0.0:
+        factor = 1.0 - (h / w)
+        in_dy = min(abs(lat - cy), h / 2.0) * factor
+    elif h > w and h > 0.0:
+        factor = 1.0 - (w / h)
+        in_dx = min(abs(lon - cx), w / 2.0) * factor
+
+    cos_lat = math.cos(math.radians(lat))
+    lat_m = in_dy * EARTH_M_PER_DEG_LAT
+    lon_m = in_dx * EARTH_M_PER_DEG_LAT * cos_lat
+    return math.sqrt(lat_m * lat_m + lon_m * lon_m)
+
+
+def normalize_route_name(raw):
+    """Mirror RoadNameMatcher.normalize(_:) in Swift.
+    Removes zero-padded direction/terminus markers, leading numeric prefix,
+    leading directional prefix, and expands common suffix aliases.
+    """
+    s = (raw or "").upper().strip()
+    while "  " in s:
+        s = s.replace("  ", " ")
+    if s.endswith(" 0"):
+        s = s[:-2].strip()
+    parts = s.split(" ")
+    idx = 0
+    if idx < len(parts) and parts[idx].isdigit():
+        idx += 1
+    if idx < len(parts) and parts[idx] in DIRECTION_PREFIXES:
+        idx += 1
+    # Expand suffix aliases on the LAST remaining token.
+    tail = parts[idx:]
+    if tail and tail[-1] in SUFFIX_ALIASES:
+        tail[-1] = SUFFIX_ALIASES[tail[-1]]
+    return " ".join(tail).strip()
+
+
+def numeric_portion(raw):
+    """Mirror RoadNameMatcher.numericPortion(_:) in Swift. Returns the leading
+    digit run of the uppercase string. e.g. "I-17" -> "17", "US-60" -> "60".
+    """
+    digits = ""
+    seen = False
+    for ch in (raw or "").upper():
+        if ch.isdigit():
+            digits += ch
+            seen = True
+        elif seen:
+            break
+    return digits
+
+
+def alpha_prefix(raw):
+    """Mirror RoadNameMatcher.alphaPrefix(_:) in Swift. Returns the leading
+    alpha run before the first digit or non-letter. "I-17" -> "I",
+    "US-60" -> "US", "17" -> "".
+    """
+    upper = (raw or "").upper()
+    letters = ""
+    for ch in upper:
+        if ch.isalpha():
+            letters += ch
+        elif ch.isdigit():
+            break
+    return letters
+
+
+def name_match_score(geocoded_name, sqlite_route_id):
+    """Mirror RoadNameMatcher.score(geocodedName:sqliteRouteId:) in Swift.
+    Returns 0.0-1.0; 0.0 if either input is missing.
+    """
+    if not geocoded_name or not sqlite_route_id:
+        return 0.0
+    g_norm = normalize_route_name(geocoded_name)
+    r_norm = normalize_route_name(sqlite_route_id)
+    if not g_norm or not r_norm:
+        return 0.0
+
+    if g_norm == r_norm:
+        return 1.0
+
+    g_tokens = set(g_norm.split(" "))
+    r_tokens = set(r_norm.split(" "))
+    if g_tokens and g_tokens.issubset(r_tokens):
+        return 0.85
+
+    g_digits = numeric_portion(geocoded_name)
+    r_digits = numeric_portion(sqlite_route_id)
+    if g_digits and (g_digits == r_digits):
+        provider_prefix = alpha_prefix(sqlite_route_id)
+        name_tokens = set((geocoded_name or "").upper().split(" "))
+
+        # Negative family check.
+        for kw, family in STRICT_FAMILY_KEYWORDS.items():
+            if kw in name_tokens and provider_prefix != family:
+                return 0.0
+        # Positive strict family match.
+        for kw, family in STRICT_FAMILY_KEYWORDS.items():
+            if kw in name_tokens and provider_prefix == family:
+                return 0.7
+        # Positive generic-type match.
+        has_generic = any(tok in GENERIC_TYPE_KEYWORDS for tok in name_tokens)
+        if has_generic and provider_prefix and provider_prefix not in ("I", "US"):
+            return 0.5
+    return 0.0
+
+
+def fetch_segments(conn, lat, lon):
+    """ARCHIVE ONLY: adapt historical SQLite rows for future reactivation.
+
+    Production code never calls this helper and the server no longer imports
+    sqlite3 or opens the Arizona file. A future reactivation must deliberately
+    restore its database dependency and replace the dataset nationwide.
+    """
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT a.SpeedLimit, b.minx, b.maxx, b.miny, b.maxy, a.RouteId "
+        "FROM SpeedLimit_2024 a "
+        "JOIN st_spindex__SpeedLimit_2024_SHAPE b ON a.OBJECTID = b.pkid "
+        "WHERE ? <= b.maxx AND ? >= b.minx "
+        "  AND ? <= b.maxy AND ? >= b.miny",
+        (
+            lon - 0.03, lon + 0.03,
+            lat - 0.03, lat + 0.03,
+        ),
+    )
+    out = []
+    for r in cur.fetchall():
+        if r[0] is None:
+            continue
+        limit = int(r[0])
+        if limit <= 0:
+            continue
+        out.append({
+            'limit': limit,
+            'minx': float(r[1]), 'maxx': float(r[2]),
+            'miny': float(r[3]), 'maxy': float(r[4]),
+            'route_id': r[5],
+        })
+    return out
+
+
+def snap(segments, lat, lon, road_name=None):
+    """ARCHIVE ONLY: mirror the historical Arizona matcher.
+
+    This is used by regression tests with synthetic segments, never by the
+    HTTP orchestrator or any active provider.
+
+    Two-pass scoring (named-first, then spatial):
+
+      Pass 1 -- if `road_name` is non-empty, gather all candidates within
+        NAME_MATCH_SPATIAL_GATE_M that score >= NAME_MATCH_THRESHOLD against
+        `road_name`. Pick the lowest-scoring one (the spatial terms +
+        corridor offset + the giant NAME_MATCH_BONUS subtraction).
+        If NO candidate qualifies, REJECT Sqlite entirely (return 0, None)
+        so the orchestrator falls through to live ArcGIS / Overpass.
+      Pass 2 -- only attempted when `road_name` is None. Pure spatial, with
+        the legacy 20 m SNAP_RADIUS_M gate, no name bonus.
+
+    Background: the older single-pass implementation applied the 20 m spatial
+    gate BEFORE the road-name bonus. Mega-bbox freeway segments (like S 202
+    whose 36 km x 5 km corridor engulfs residential streets) were always 0 m
+    away and always won, even when the user is on a side street with no SQL
+    coverage. The two-pass model here flips that: name goes first when known,
+    and when the SQLite really has nothing for the user's road, we admit it
+    instead of faking a freeways number.
+    """
+    best_limit, best_route, best_score = 0, None, float('inf')
+
+    # ---- Pass 1: name-first across the cache, wide gate ----
+    if road_name:
+        for seg in segments:
+            ddx = seg['maxx'] - seg['minx']
+            ddy = seg['maxy'] - seg['miny']
+            if math.sqrt(ddx * ddx + ddy * ddy) > SKIP_DIAGONAL_DEGREES:
+                continue
+            dist = segment_distance_m(seg['minx'], seg['maxx'],
+                                      seg['miny'], seg['maxy'], lat, lon)
+            if dist > NAME_MATCH_SPATIAL_GATE_M:
+                continue
+            nm = name_match_score(road_name, seg['route_id'])
+            if nm < NAME_MATCH_THRESHOLD:
+                continue
+            score = (dist + SCORE_BASE_OFFSET) + centerline_offset_m(
+                seg['minx'], seg['maxx'],
+                seg['miny'], seg['maxy'], lat, lon,
+            )
+            score -= NAME_MATCH_BONUS_MAGNITUDE * nm
+            if score < best_score:
+                best_score = score
+                best_limit = seg['limit']
+                best_route = seg['route_id']
+        if best_limit > 0:
+            return best_limit, best_route, None
+        # REJECT Sqlite entirely so the orchestrator falls through to live
+        # providers and ultimately shows "No Data" if none have it.
+        return 0, None, "no SQL coverage for " + road_name
+
+    # ---- Pass 2: spatial-only fallback (no road_name) ----
+    # ARCHITECTURE: Two gate widths are used together.
+    #   1. Corridors (aspect > AMBIGUOUS_CORRIDOR_ASPECT_RATIO) ONLY pass the
+    #      20 m SNAP_RADIUS_M gate. Widening their gate would let a freeway
+    #      visa-snap onto a residential coord a few hundred meters away.
+    #   2. Non-corridors (local roads) ALSO pass a much wider 1000 m gate so
+    #      the algorithm can find a tight local road that's clearly closer
+    #      to the user than a freeway mega-bbox with dist=0.
+    # Candidates classed as AMBIGUOUS corridors (corridor + centerlineOffset
+    # > 250 m) get a +2000 score penalty. Without this, an ambiguous
+    # corridor (S 202 with offset = 740 m at (33.29888, -111.83890)) has
+    # score = 765, beating a local road 1.4 m away with score 36.9? No --
+    # actually 36.9 < 765 so the local road wins anyway. The penalty is
+    # BELT-AND-SUSPENDERS for the future case where a corridor is even
+    # wider offset (e.g. 2 km+) OR a tighter local-road bbox is missing.
+    for seg in segments:
+        ddx = seg['maxx'] - seg['minx']
+        ddy = seg['maxy'] - seg['miny']
+        if math.sqrt(ddx * ddx + ddy * ddy) > SKIP_DIAGONAL_DEGREES:
+            continue
+        dist = segment_distance_m(seg['minx'], seg['maxx'],
+                                  seg['miny'], seg['maxy'], lat, lon)
+        offset = centerline_offset_m(seg['minx'], seg['maxx'],
+                                     seg['miny'], seg['maxy'], lat, lon)
+        min_dim = min(ddx, ddy)
+        max_dim = max(ddx, ddy)
+        # Corridor iff aspect ratio strictly greater than 3 AND the bbox
+        # has nonzero extent. A perfectly-symmetric bbox is NEVER a corridor.
+        is_corridor = (
+            min_dim > 0.0
+            and max_dim > AMBIGUOUS_CORRIDOR_ASPECT_RATIO * min_dim
+        )
+        is_ambiguous = is_corridor and offset > AMBIGUOUS_CORRIDOR_OFFSET_M
+        # Ambiguous corridors see the legacy 20 m gate (same as before); any
+        # other candidate sees the wider 1000 m gate so the local road
+        # candidates can be considered.
+        effective_radius = (
+            SNAP_RADIUS_M if is_ambiguous else PASS2_LOCAL_ROAD_RADIUS_M
+        )
+        if dist > effective_radius:
+            continue
+        score = (dist + SCORE_BASE_OFFSET) + offset
+        if is_ambiguous:
+            score += AMBIGUOUS_CORRIDOR_PENALTY
+        if score < best_score:
+            best_score = score
+            best_limit = seg['limit']
+            best_route = seg['route_id']
+    return best_limit, best_route, None
+
+
+# ---- SpeedLimit Continuity Guard (active test mirror) ----------------------
+#
+# Pure-Python mirror of the iOS orchestrator's `finalizeWithContinuity(...)`
+# decision so the website's tests can regression-check the same algorithm
+# without spawning Swift tests.
+#
+# Background: when the user drives under a flyover, CLGeocoder can briefly
+# resolve `roadName` to the OVERPASS road for ~3-5 seconds. The orchestrator
+# then publishes the freeway's 75 mph for that window, before SQLite
+# name-match corrects back to 45 mph. This guard dampens that flicker.
+#
+# Rules (mirrored byte-for-byte from SmartSpeedLimitService.swift):
+#   1. Small speed delta (<= 20 mph) OR same-road identity  -> commit immediately
+#   2. Physics override: |new - userSpeed| <= 10 AND |prior - userSpeed| > 15
+#      (driver is moving at the new speed; the answer matching physics wins)
+#   3. Suspect hold: hold prior for up to 5 consequent fetches with the
+#      same (roadName, roadKey) identity. After 5, sink-in.
+#
+# The web orchestrator is stateless across clicks, so the live UI doesn't
+# run this guard -- it just ships the raw answer. The Python mirror exists
+# for parity regression testing.
+class ContinuityGuard:
+    # All 4 are byte-for-byte mirrors of SmartSpeedLimitService.swift. Verdict
+    # card from research 2026-07:
+    #   SUSPICIOUS_JUMP_MPH      = 20 : UNVERIFIED -- no US federal/engineering
+    #     rule specifies a max speed-zone delta. MUTCD governs transition
+    #     length, not delta; FHWA Speed Limit Setting Handbook uses the 85th-    #   percentile rule. Work-zone management literature treats 10-15 mph
+    #     max-mph-delta as a design boundary; beyond that transition zones /
+    #     additional signage are recommended. 20 mph
+    #     chosen empirically to admit arterial->highway jumps while rejecting
+    #     the observed 30-mph flyover flicker.
+    #   SUSPICIOUS_FETCH_HOLD    = 5  : WEAKLY-DEFENSIBLE -- Apple publishes no
+    #     CLGeocoder latency SLA. 5 fetches = ~5 to ~45 sec depending on fetch
+    #     cadence and vehicle speed
+    #     cadence; application-layer debounce; nothing in Apple HIG contradicts.
+    #   PHYSICS_TOLERANCE_MPH    = 10 : WEAKLY-DEFENSIBLE -- 49 CFR §393.82 CMV
+    #     speedometer accuracy = +/- 5 mph at 50 mph; iPhone CLLocationSpeed
+    #     typically +/- 0.2-0.5 mph open-sky; up to +/- 2-3 mph in multipath
+    #     / signal degradation; combined worst-case ~5-8 mph; 10 mph is
+    #     deliberately generous.
+    #   PHYSICS_PRIOR_MARGIN_MPH = 15 : UNVERIFIED -- no FHWA / AASHTO
+    #     "inter-road-class mph gap" rule exists. 15 mph = typical arterial->
+    #     highway speed differential observed empirically in real driving.
+    SUSPICIOUS_JUMP_MPH = 20         # Swift: SUSPICIOUS_JUMP_MPH
+    SUSPICIOUS_FETCH_HOLD = 5        # Swift: SUSPICIOUS_FETCH_HOLD
+    PHYSICS_TOLERANCE_MPH = 10       # Swift: PHYSICS_TOLERANCE_MPH
+    PHYSICS_PRIOR_MARGIN_MPH = 15    # Swift: PHYSICS_PRIOR_MARGIN_MPH
+
+    def __init__(self):
+        # `last_stable` mirrors `lastStable: ContinuitySnapshot?` in Swift.
+        self.last_stable = None
+        # `pending_suspect` mirrors `pendingSuspect: ContinuitySnapshot?`.
+        self.pending_suspect = None
+        # `consecutive_suspect_count` mirrors `consecutiveSuspectCount`.
+        self.consecutive_suspect_count = 0
+
+    def step(self, candidate, user_speed_mph):
+        """`candidate` is a dict: {limit, source, road_key, road_name}.
+        Returns a dict {display, action} where action is one of:
+          'commit'         -- candidate was published; HUD takes it
+          'commit_first'   -- first fetch ever; commit unconditionally
+          'hold'           -- suspect hold; HUD keeps `last_stable['limit']`
+        Mutates `last_stable`, `pending_suspect`, `consecutive_suspect_count`
+        exactly the way the Swift guard mutates its mirror vars.
+        """
+        snapshot = {
+            'limit': int(candidate['limit']),
+            'source': candidate.get('source', 'localDB'),
+            'road_key': candidate.get('road_key', ''),
+            'road_name': candidate.get('road_name'),
+            'committedAt': time.time(),
+        }
+        prior = self.last_stable
+        if prior is None:
+            self.last_stable = snapshot
+            self.pending_suspect = None
+            self.consecutive_suspect_count = 0
+            return {'display': snapshot['limit'], 'action': 'commit_first'}
+
+        speed_delta = abs(snapshot['limit'] - prior['limit'])
+        road_changed = (
+            (snapshot['road_name'] != prior['road_name'])
+            or (snapshot['road_key'] != prior['road_key'])
+        )
+
+        # Rule 1 -- small delta or same-road identity: commit.
+        if speed_delta <= self.SUSPICIOUS_JUMP_MPH or not road_changed:
+            self.last_stable = snapshot
+            self.pending_suspect = None
+            self.consecutive_suspect_count = 0
+            return {'display': snapshot['limit'], 'action': 'commit'}
+
+        # Rule 2 -- physics override.
+        if (abs(snapshot['limit'] - user_speed_mph) <= self.PHYSICS_TOLERANCE_MPH
+                and abs(prior['limit'] - user_speed_mph) > self.PHYSICS_PRIOR_MARGIN_MPH):
+            self.last_stable = snapshot
+            self.pending_suspect = None
+            self.consecutive_suspect_count = 0
+            return {'display': snapshot['limit'], 'action': 'commit_physics'}
+
+        # Rule 3 -- suspect hold.
+        if (self.pending_suspect is not None
+                and self.pending_suspect['road_key'] == snapshot['road_key']
+                and self.pending_suspect['road_name'] == snapshot['road_name']):
+            self.consecutive_suspect_count += 1
+        else:
+            self.pending_suspect = snapshot
+            self.consecutive_suspect_count = 1
+
+        if self.consecutive_suspect_count >= self.SUSPICIOUS_FETCH_HOLD:
+            # Sink-in: 5 consecutive suspect fetches -> commit.
+            self.last_stable = snapshot
+            self.pending_suspect = None
+            self.consecutive_suspect_count = 0
+            return {'display': snapshot['limit'], 'action': 'commit_sinkin'}
+
+        # Hold prior -- dampen the flyover-resolve flicker for ~5 fetches.
+        return {'display': prior['limit'], 'action': 'hold'}
+
+
+# ---- In-Memory Response Cache (mirrors SpeedLimitResponseCache.swift) ----
+# Spatial-grid keyed cache. ~50m cells. LRU-evicted above 500 entries.
+# TTL: 30 minutes in memory, matching the iOS memoryTtl.
+
+class ResponseCache:
+    """Mirrors SmartSpeedCompanion/Core/SpeedLimitResponseCache.swift.
+    Spatial grid (~50m cells), LRU eviction at 500 entries, 30-min TTL.
+    """
+    def __init__(self):
+        self._memory = {}
+        self._lru = []
+        self._max_entries = 500
+        self._memory_ttl = 30 * 60  # 30 minutes
+        self._grid_precision = 0.0005  # ~50m
+
+    def _grid_key(self, lat, lon, road_name=None):
+        lat_k = round(lat / self._grid_precision) * self._grid_precision
+        lon_k = round(lon / self._grid_precision) * self._grid_precision
+        name_hash = hash(road_name or '')
+        return f"g:{lat_k:.4f},{lon_k:.4f}_{name_hash}"
+
+    def lookup(self, lat, lon, road_name=None):
+        key = self._grid_key(lat, lon, road_name)
+        entry = self._memory.get(key)
+        if entry is None:
+            return None
+        now = time.time()
+        if now - entry['cached_at'] > self._memory_ttl:
+            self._memory.pop(key, None)
+            return None
+        # Distance sanity: within 50m
+        dlat = (lat - entry['lat']) * EARTH_M_PER_DEG_LAT
+        dlon = (lon - entry['lon']) * EARTH_M_PER_DEG_LAT * math.cos(math.radians(lat))
+        if math.sqrt(dlat * dlat + dlon * dlon) > 50:
+            return None
+        # Bump to MRU (safe remove: key may not be in list on first access)
+        if key in self._lru:
+            self._lru.remove(key)
+        self._lru.insert(0, key)
+        return entry['response']
+
+    def store(self, lat, lon, response, road_name=None):
+        key = self._grid_key(lat, lon, road_name)
+        entry = {
+            'lat': lat,
+            'lon': lon,
+            'road_name': road_name,
+            'cached_at': time.time(),
+            'response': response,
+        }
+        self._memory[key] = entry
+        if key in self._lru:
+            self._lru.remove(key)
+        self._lru.insert(0, key)
+        # LRU eviction
+        while len(self._memory) > self._max_entries:
+            oldest = self._lru.pop()
+            self._memory.pop(oldest, None)
+
+    @property
+    def count(self):
+        return len(self._memory)
+
+    def clear(self):
+        self._memory.clear()
+        self._lru.clear()
+
+RESPONSE_CACHE = ResponseCache()
+
+
+# ---- In-Memory Batch Cache (mirrors HERELocalBatchCache.swift) ----
+# SQLite-backed in the iOS app; for the web we use a simple dict.
+
+class BatchCache:
+    """Mirrors SmartSpeedCompanion/Core/HERELocalBatchCache.swift.
+    Stores road segments by name + direction for fast lookups.
+    For the web we use an in-memory dict instead of SQLite.
+    """
+    def __init__(self):
+        # Index: road_name.upper() + '|' + direction -> list of {speed_limit, lat, lon, source}
+        self._by_name = {}
+        # All entries for spatial fallback
+        self._all = []
+        self._ttl_days = 30
+
+    def _direction_from_bearing(self, bearing):
+        if bearing is None:
+            return ''
+        b = float(bearing) % 360
+        if b < 22.5 or b >= 337.5:
+            return 'N'
+        if b < 67.5:
+            return 'NE'
+        if b < 112.5:
+            return 'E'
+        if b < 157.5:
+            return 'SE'
+        if b < 202.5:
+            return 'S'
+        if b < 247.5:
+            return 'SW'
+        if b < 292.5:
+            return 'W'
+        return 'NW'
+
+    def lookup(self, road_name, bearing=None):
+        """Primary path: name-first lookup."""
+        if not road_name:
+            return None
+        key = road_name.upper().strip()
+        entries = self._by_name.get(key, [])
+        if not entries:
+            # Try without direction prefix
+            parts = key.split()
+            if len(parts) > 1 and parts[0] in DIRECTION_PREFIXES:
+                key2 = ' '.join(parts[1:])
+                entries = self._by_name.get(key2, [])
+        if not entries:
+            return None
+        # Try to match by bearing direction
+        if bearing is not None:
+            bearing_dir = self._direction_from_bearing(bearing)
+            for e in entries:
+                if e['direction'] == bearing_dir or e['direction'] == '':
+                    return e
+        return entries[0] if entries else None
+
+    def lookup_nearest(self, lat, lon, radius_m=50):
+        """Spatial fallback: nearest within radius."""
+        best, best_dist = None, float('inf')
+        lat_r = radius_m / EARTH_M_PER_DEG_LAT
+        lon_r = radius_m / (EARTH_M_PER_DEG_LAT * math.cos(math.radians(lat)))
+        for e in self._all:
+            if abs(e['lat'] - lat) > lat_r or abs(e['lon'] - lon) > lon_r:
+                continue
+            dlat = (lat - e['lat']) * EARTH_M_PER_DEG_LAT
+            dlon = (lon - e['lon']) * EARTH_M_PER_DEG_LAT * math.cos(math.radians(lat))
+            d = math.sqrt(dlat * dlat + dlon * dlon)
+            if d < best_dist:
+                best_dist = d
+                best = e
+        if best and best_dist <= radius_m:
+            return best
+        return None
+
+    def combined_lookup(self, lat, lon, road_name=None, bearing=None):
+        """Combined lookup: name-first, then spatial fallback."""
+        if road_name:
+            hit = self.lookup(road_name, bearing)
+            if hit:
+                return hit
+        return self.lookup_nearest(lat, lon)
+
+    def store_roads(self, roads):
+        """Store a list of road dicts: {road_name, direction, speed_limit, lat, lon, source}"""
+        for r in roads:
+            key = r['road_name'].upper().strip()
+            if key not in self._by_name:
+                self._by_name[key] = []
+            # Replace if same (road_name, direction, lat, lon)
+            existing = None
+            for i, e in enumerate(self._by_name[key]):
+                if (e['direction'] == r.get('direction', '')
+                        and abs(e['lat'] - r['lat']) < 0.00001
+                        and abs(e['lon'] - r['lon']) < 0.00001):
+                    existing = i
+                    break
+            if existing is not None:
+                self._by_name[key][existing] = r
+            else:
+                self._by_name[key].append(r)
+            # Update _all
+            found = False
+            for i, e in enumerate(self._all):
+                if (e.get('road_name') == r['road_name']
+                        and e.get('direction', '') == r.get('direction', '')
+                        and abs(e['lat'] - r['lat']) < 0.00001
+                        and abs(e['lon'] - r['lon']) < 0.00001):
+                    self._all[i] = r
+                    found = True
+                    break
+            if not found:
+                self._all.append(r)
+
+    @property
+    def count(self):
+        return len(self._all)
+
+    def clear(self):
+        self._by_name.clear()
+        self._all.clear()
+
+BATCH_CACHE = BatchCache()
+
+
+# ---- HERE REST provider (mirrors HERERestSpeedLimitProvider.swift) ----
+
+def query_here_for_speed(lat, lon, heading=None):
+    """Mirror HERERestSpeedLimitProvider.fetchSpeedLimit(at:heading:) in Swift.
+    Uses HERE Routing API v8 with a ~35m self-loop to get the speed limit
+    for the road segment at (lat,lon). Returns SpeedLimitResponse-shaped
+    dict, or None on miss/error.
+
+    NOTE: The iOS app's provider self-throttles at 100m distance / 10s failure
+    window. We implement similar throttling here for the web.
+    """
+    if not HERE_API_KEY or HERE_API_KEY == 'YOUR_HERE_API_KEY':
+        return None
+
+    # Offset ~35m east-ish (heading-agnostic) to create a self-loop.
+    meter_deg_lat = 1.0 / EARTH_M_PER_DEG_LAT
+    meter_deg_lon = 1.0 / (EARTH_M_PER_DEG_LAT * max(0.000001, math.cos(math.radians(lat))))
+    d_lat = 35.0 * meter_deg_lat
+    d_lon = 35.0 * meter_deg_lon
+
+    origin = f"{lat:.6f},{lon:.6f}"
+    dest = f"{lat + d_lat:.6f},{lon + d_lon:.6f}"
+
+    params = {
+        'transportMode': 'car',
+        'origin': origin,
+        'destination': dest,
+        'routingMode': 'fast',
+        'return': 'summary,speedLimit',
+        'apiKey': HERE_API_KEY,
+    }
+    url = 'https://router.hereapi.com/v8/routes?' + urllib.parse.urlencode(params)
+
+    try:
+        req = urllib.request.Request(url, headers={
+            'User-Agent': USER_AGENT,
+            'Accept': 'application/json',
+        })
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            if resp.status == 429:
+                return None
+            payload = json.loads(resp.read().decode('utf-8'))
+    except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError, OSError, TimeoutError):
+        return None
+
+    routes = payload.get('routes') or []
+    if not routes:
+        return None
+    sections = routes[0].get('sections') or []
+    if not sections:
+        return None
+    speed_limit_obj = sections[0].get('speedLimit') or {}
+    speed_value = speed_limit_obj.get('speed')
+    if speed_value is None:
+        return None
+
+    # HERE returns speed in m/s. Convert to mph.
+    mph = int(round(speed_value * 2.23694))
+    if mph <= 0 or mph > 90:
+        return None
+
+    return {
+        'speedLimitMph': mph,
+        'roadKey': f'here-rest-{mph}',
+        'providerName': 'HERE REST',
+        'detail': f'HERE REST v8 segment speed {mph} mph',
+    }
+
+
+# ---- HERE Route Matching provider (mirrors HERERouteMatchingBatchProvider.swift) ----
+
+def query_here_batch_for_speed(lat, lon, road_name=None, heading=None):
+    """Mirror HERERouteMatchingBatchProvider — tries the local batch cache
+    first, and if that fails, optionally queries the HERE Route Matching API
+    to populate it. Falls back to batch cache spatial lookup.
+    """
+    # Try the in-memory batch cache first
+    cached = BATCH_CACHE.combined_lookup(lat, lon, road_name, heading)
+    if cached:
+        return {
+            'speedLimitMph': cached['speed_limit'],
+            'roadKey': cached['road_name'] + (' ' + cached.get('direction', '') if cached.get('direction') else ''),
+            'providerName': 'HERE Batch',
+            'detail': f'Batch cache on {cached["road_name"]}' if road_name else 'Batch cache near coord',
+        }
+    return None
+
+
+# ---- Full Orchestrator (mirrors SmartSpeedLimitService.resolveCandidate) ----
+# Decision tree (matches iOS app exactly):
+#   1. Response cache lookup (spatial grid, 30-min TTL)
+#   2. Batch cache lookup (HERE Route Matching offline cache)
+#   3. HERE REST (primary live provider)
+#   4. ArcGIS HPMS (secondary live)
+#   5. Overpass (tertiary live)
+#   6. No Data when all active providers miss
+
+def orchestrate_speed_limit(lat, lon, road_name=None, heading=None):
+    """Run the full speed-limit decision tree matching SmartSpeedLimitService.
+    Returns a dict with keys:
+      - limit: final speed limit mph (0 = no data)
+      - source: SpeedLimitDataSource string
+      - provider: provider name
+      - road_key: stable road identifier
+      - detail: human-readable detail
+      - trace: list of {step, result} for the UI
+    """
+    trace = []
+    result = {'limit': 0, 'source': 'No Data', 'provider': '', 'road_key': '', 'detail': '', 'trace': trace}
+
+    def _trace(step, status, msg):
+        trace.append({'step': step, 'status': status, 'msg': str(msg)})
+
+    _trace('Pipeline', 'sys', f'lat={lat:.6f} lon={lon:.6f}')
+    _trace('ReverseGeo', 'sys', f'road_name={road_name or "<none>"}')
+
+    # Step 1: Response Cache
+    _trace('1. Cache', 'sys', 'spatial grid lookup')
+    cached = RESPONSE_CACHE.lookup(lat, lon, road_name)
+    if cached:
+        _trace('1. Cache', 'hit', f'{cached["speedLimitMph"]} mph from {cached["providerName"]}')
+        result.update({
+            'limit': cached['speedLimitMph'],
+            'source': 'Cache',
+            'provider': cached['providerName'],
+            'road_key': cached['roadKey'],
+            'detail': cached['detail'],
+        })
+        return result
+    _trace('1. Cache', 'miss', 'no cached entry')
+
+    # Step 2: Batch Cache (HERE Route Matching offline results)
+    _trace('2. Batch', 'sys', f'lookup road_name={road_name or "<none>"} heading={heading or "<none>"}')
+    batch = query_here_batch_for_speed(lat, lon, road_name, heading)
+    if batch:
+        _trace('2. Batch', 'hit', f'{batch["speedLimitMph"]} mph on {batch["roadKey"]}')
+        RESPONSE_CACHE.store(lat, lon, batch, road_name)
+        result.update({
+            'limit': batch['speedLimitMph'],
+            'source': 'Batch (HERE)',
+            'provider': batch['providerName'],
+            'road_key': batch['roadKey'],
+            'detail': batch['detail'],
+        })
+        return result
+    _trace('2. Batch', 'miss', 'no cached entry')
+
+    # Step 3: HERE REST (primary live provider)
+    _trace('3. HERE REST', 'sys', 'calling HERE Routing API v8')
+    if HERE_API_KEY and HERE_API_KEY != 'YOUR_HERE_API_KEY':
+        here = query_here_for_speed(lat, lon, heading)
+        if here:
+            _trace('3. HERE REST', 'hit', f'{here["speedLimitMph"]} mph')
+            RESPONSE_CACHE.store(lat, lon, here, road_name)
+            result.update({
+                'limit': here['speedLimitMph'],
+                'source': 'Live (HERE)',
+                'provider': here['providerName'],
+                'road_key': here['roadKey'],
+                'detail': here['detail'],
+            })
+            return result
+        _trace('3. HERE REST', 'miss', 'no response / no coverage')
+    else:
+        _trace('3. HERE REST', 'skip', 'no HERE_API_KEY configured')
+
+    # Step 4: ArcGIS HPMS (secondary live provider)
+    _trace('4. ArcGIS', 'sys', 'calling ArcGIS HPMS FeatureServer')
+    arc = query_arcgis_for_speed(lat, lon, heading)
+    if arc:
+        _trace('4. ArcGIS', 'hit', f'{arc["speedLimitMph"]} mph on {arc.get("roadKey", "?")}')
+        RESPONSE_CACHE.store(lat, lon, arc, road_name)
+        result.update({
+            'limit': arc['speedLimitMph'],
+            'source': 'Live (ArcGIS)',
+            'provider': arc['providerName'],
+            'road_key': arc.get('roadKey', ''),
+            'detail': arc.get('detail', ''),
+        })
+        return result
+    _trace('4. ArcGIS', 'miss', 'no features / no coverage')
+
+    # Step 5: Overpass (tertiary live provider)
+    _trace('5. Overpass', 'sys', 'calling Overpass API')
+    ov = query_overpass_for_speed(lat, lon, heading)
+    if ov:
+        _trace('5. Overpass', 'hit', f'{ov["speedLimitMph"]} mph on {ov.get("roadKey", "?")}')
+        RESPONSE_CACHE.store(lat, lon, ov, road_name)
+        result.update({
+            'limit': ov['speedLimitMph'],
+            'source': 'Live (Overpass)',
+            'provider': ov['providerName'],
+            'road_key': ov.get('roadKey', ''),
+            'detail': ov.get('detail', ''),
+        })
+        return result
+    _trace('5. Overpass', 'miss', 'no ways with maxspeed tag nearby')
+
+    # No active provider returned data. The Arizona SQLite implementation remains
+    # archived in the repository, but this server intentionally never executes it.
+    _trace('Result', 'err', 'No Data from any active provider')
+    return result
+
+
+# ---- Overpass / ArcGIS paths (Python mirrors of Swift providers) ----
+
+def query_overpass_for_speed(lat, lon, heading=None):
+    """Mirror OverpassSpeedLimitProvider.fetchSpeedLimit(at:heading:) in Swift.
+    Throttled to ~1 query / 100m of movement. Returns a live-provider response
+    dict compatible with ArcGIS responses, or None.
+    """
+    query = (
+        "[out:json][timeout:10];\n"
+        f"way(around:100,{lat},{lon})[highway][maxspeed];\n"
+        "out tags center 1;\n"
+    )
+    body = urllib.parse.urlencode({"data": query}).encode("utf-8")
+    req = urllib.request.Request(
+        "https://overpass-api.de/api/interpreter",
+        data=body,
+        headers={
+            "User-Agent": USER_AGENT,
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status == 429:
+                return None
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError, OSError) as e:
+        return None
+
+    elements = payload.get("elements") or []
+    if not elements:
+        return None
+
+    # Pick the closest element with a parseable maxspeed.
+    def parse_maxspeed(raw):
+        if not raw:
+            return None
+        s = raw.strip().lower()
+        is_kmh = ("km/h" in s) or ("kmh" in s) or ("kph" in s)
+        digits = ""
+        seen = False
+        for ch in s:
+            if ch.isdigit() or ch == ".":
+                digits += ch
+                seen = True
+            elif seen:
+                break
+        if not digits:
+            return None
+        n = float(digits)
+        if n <= 0 or n > 200:
+            return None
+        return int(round(n * 0.621371)) if is_kmh else int(round(n))
+
+    lat1 = math.radians(lat)
+    best, best_dist = None, float("inf")
+    for el in elements:
+        tags = el.get("tags") or {}
+        mph = parse_maxspeed(tags.get("maxspeed", ""))
+        if not mph:
+            continue
+        c = el.get("center") or {}
+        el_lat = c.get("lat") if "lat" in c else el.get("lat")
+        el_lon = c.get("lon") if "lon" in c else el.get("lon")
+        if el_lat is None or el_lon is None:
+            continue
+        dlat = math.radians(el_lat - lat)
+        dlon = math.radians(el_lon - lon)
+        a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(math.radians(el_lat)) \
+            * math.sin(dlon / 2) ** 2
+        m = 6_378_137.0 * 2 * math.asin(math.sqrt(a))
+        if m < best_dist:
+            best_dist = m
+            highway = tags.get("highway", "")
+            detail = f"OSM way {el.get('id')} ({highway})" if highway else f"OSM way {el.get('id')}"
+            best = {
+                "speedLimitMph": mph,
+                "roadKey": f"way{el.get('id')}",
+                "providerName": "Overpass",
+                "detail": detail,
+            }
+    return best
+
+
+def query_arcgis_for_speed(lat, lon, heading=None):
+    """Direct port of ArcGISHPMSSpeedLimitProvider.fetchSpeedLimit(at:heading:)
+    to Python. Returns None on miss; full SpeedLimitResponse-shaped dict on hit.
+    """
+    base = (
+        "https://services6.arcgis.com/clPWQMwZfdWn4MQZ/arcgis/rest/services/"
+        "HPMS_2024_Data/FeatureServer/48/query"
+    )
+    geom = json.dumps({"x": lon, "y": lat})
+    params = {
+        "f": "json",
+        "geometry": geom,
+        "geometryType": "esriGeometryPoint",
+        "inSR": "4326",
+        "spatialRel": "esriSpatialRelIntersects",
+        "outFields": "OBJECTID,SpeedLimit,SRNumber,SpeedLimitDirection_Value,SpeedLimitType_Value",
+        "returnGeometry": "true",
+        "resultRecordCount": "10",
+    }
+    url = base + "?" + urllib.parse.urlencode(params)
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": USER_AGENT,
+            "Accept": "application/json",
+        })
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError, OSError, TimeoutError):
+        return None
+    features = payload.get("features") or []
+    if not features:
+        return None
+
+    def match_cardinal(s):
+        u = (s or "").upper()
+        if "NB" in u and "SB" not in u: return 0
+        if "SB" in u and "NB" not in u: return 180
+        if "EB" in u and "WB" not in u: return 90
+        if "WB" in u and "EB" not in u: return 270
+        return None
+
+    def normalize_angle(d):
+        x = d % 360
+        if x > 180: x -= 360
+        if x <= -180: x += 360
+        return x
+
+    R = 6_378_137.0
+    lat1 = math.radians(lat)
+    best_score, best_idx = float("inf"), None
+    for idx, f in enumerate(features):
+        attrs = f.get("attributes") or {}
+        if (attrs.get("SpeedLimit") or 0) <= 0:
+            continue
+        paths = ((f.get("geometry") or {}).get("paths")) or []
+        if paths:
+            min_dist = float("inf")
+            for path in paths:
+                for pair in path:
+                    if len(pair) < 2: continue
+                    lon2, lat2 = pair[0], math.radians(pair[1])
+                    dlat = lat2 - lat1
+                    dlon = math.radians(pair[0] - lon)
+                    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) \
+                        * math.sin(dlon / 2) ** 2
+                    m = R * 2 * math.asin(math.sqrt(a))
+                    if m < min_dist:
+                        min_dist = m
+            if min_dist == float("inf"):
+                continue
+        else:
+            min_dist = 75.0  # mirror Swift fallback when geometry null
+        score = min_dist + 1.0
+        if heading is not None:
+            road_h = match_cardinal(attrs.get("SpeedLimitDirection_Value"))
+            if road_h is not None:
+                diff = abs(normalize_angle(heading - road_h))
+                if diff > 90: score *= 10.0
+                elif diff > 40: score *= 3.0
+        if score < best_score:
+            best_score = score
+            best_idx = idx
+    if best_idx is None:
+        return None
+    f = features[best_idx]
+    attrs = f.get("attributes") or {}
+    sr = attrs.get("SRNumber") or "?"
+    direction = attrs.get("SpeedLimitDirection_Value") or "?"
+    kind = attrs.get("SpeedLimitType_Value") or "Speed Limit"
+    return {
+        "speedLimitMph": int(attrs.get("SpeedLimit")),
+        "roadKey": f"SR{sr}-{direction}",
+        "providerName": "ArcGIS",
+        "detail": f"{kind}; SR {sr} {direction}",
+    }
+
+
+# ---- Nominatim /reverse: 50m grid cache + 1 req/sec throttle -------------
+
+class ReverseGeocoder:
+    """Mirrors SmartSpeedCompanion/Core/RoadGeocoder.swift. 50m grid
+    cache + 1 req/sec throttle per Nominatim policy, with in-flight de-dup
+    so two concurrent clicks on the same cell coalesce into one HTTP call.
+    """
+    def __init__(self):
+        self._cache = {}
+        self._inflight = {}
+        self._lock = threading.Lock()
+        self._last_call_at = 0.0
+
+    def _grid_key(self, lat, lon):
+        lat_k = round(lat / GEOCODE_GRID_DEGREES) * GEOCODE_GRID_DEGREES
+        lon_k = round(lon / GEOCODE_GRID_DEGREES) * GEOCODE_GRID_DEGREES
+        return f"g:{lat_k:.4f},{lon_k:.4f}"
+
+    def resolve(self, lat, lon):
+        key = self._grid_key(lat, lon)
+        cached = self._cache.get(key)
+        now = time.time()
+        if cached and (now - cached["resolvedAt"]) < GEOCODE_TTL_SECONDS:
+            return cached
+
+        with self._lock:
+            if key in self._inflight:
+                return self._inflight[key]
+            future = {}
+            self._inflight[key] = future
+        try:
+            # Throttle to >=1.1s between ANY two Nominatim requests.
+            with self._lock:
+                wait = max(0.0, NOMINATIM_MIN_INTERVAL_S - (time.time() - self._last_call_at))
+            if wait > 0:
+                time.sleep(wait)
+            params = {
+                "lat": f"{lat:.6f}", "lon": f"{lon:.6f}",
+                "format": "jsonv2", "zoom": "18", "addressdetails": "1",
+            }
+            url = NOMINATIM_URL + "?" + urllib.parse.urlencode(params)
+            req = urllib.request.Request(url, headers={
+                "User-Agent": USER_AGENT,
+                "Accept": "application/json",
+            })
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            with self._lock:
+                self._last_call_at = time.time()
+            addr = payload.get("address") or {}
+            road_name = addr.get("road") or addr.get("pedestrian") or addr.get("footway")
+            city = addr.get("city") or addr.get("town") or addr.get("village")
+            state = addr.get("state")
+            entry = {
+                "roadName": road_name,
+                "city": city,
+                "state": state,
+                "resolvedAt": time.time(),
+                "displayName": payload.get("display_name", ""),
+            }
+            self._cache[key] = entry
+            return entry
+        except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError, OSError) as e:
+            return None
+        finally:
+            with self._lock:
+                self._inflight.pop(key, None)
+
+REVERSE_GEOCODER = ReverseGeocoder()
+
+
+# ---- HTTP handler -------------------------------------------------------
+
+class Handler(BaseHTTPRequestHandler):
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
+
+    def _json(self, code, payload):
+        body = json.dumps(payload).encode('utf-8')
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_index(self):
+        file_path = os.path.join(os.path.dirname(__file__), 'index.html')
+        with open(file_path, 'rb') as f:
+            data = f.read()
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        path = self.path.split('?', 1)[0]
+        if path in ('/', '/index.html'):
+            return self._serve_index()
+        if path == '/health':
+            return self._json(200, {
+                'service': 'speedio',
+                'archived_arizona_sqlite': True,
+                'endpoints': ['/api/reverse-geocode', '/api/speedlimit',
+                          '/api/speedlimit-arcgis', '/api/speedlimit-overpass',
+                          '/api/speedlimit-here', '/api/speedlimit-batch',
+                          '/api/here-status'],
+            'here_configured': bool(HERE_API_KEY) and HERE_API_KEY != 'YOUR_HERE_API_KEY',
+            'batch_cache_count': BATCH_CACHE.count,
+            'response_cache_count': RESPONSE_CACHE.count,
+            })
+        if path == '/api/reverse-geocode':
+            try:
+                qs = urllib.parse.parse_qs(self.path.split('?', 1)[1])
+                lat = float(qs['lat'][0])
+                lon = float(qs['lon'][0])
+            except (KeyError, ValueError):
+                return self._json(400, {'error': 'need ?lat=&lon= as floats'})
+            entry = REVERSE_GEOCODER.resolve(lat, lon)
+            if entry is None:
+                return self._json(504, {'error': 'reverse geocode failed', 'lat': lat, 'lon': lon})
+            return self._json(200, {
+                'lat': lat, 'lon': lon,
+                'road_name': entry.get('roadName'),
+                'city': entry.get('city'),
+                'state': entry.get('state'),
+                'display_name': entry.get('displayName'),
+            })
+
+        # ---- HERE API health / config check ----
+        if path == '/api/here-status':
+            has_key = bool(HERE_API_KEY) and HERE_API_KEY != 'YOUR_HERE_API_KEY'
+            return self._json(200, {
+                'configured': has_key,
+                'source': 'env var' if os.environ.get('HERE_API_KEY') else ('builtin' if HERE_API_KEY else 'missing'),
+            })
+
+        # ---- Orchestrate: run the full decision tree ----
+        if path == '/api/speedlimit':
+            try:
+                qs = urllib.parse.parse_qs(self.path.split('?', 1)[1])
+                lat = float(qs['lat'][0])
+                lon = float(qs['lon'][0])
+            except (KeyError, ValueError):
+                return self._json(400, {'error': 'need ?lat=&lon= as floats'})
+            road_name = qs.get('road_name', [None])[0] or None
+            heading = qs.get('heading', [None])[0]
+            try:
+                heading = float(heading) if heading else None
+            except (ValueError, TypeError):
+                heading = None
+            result = orchestrate_speed_limit(lat, lon, road_name, heading)
+            return self._json(200, result)
+
+        return self._json(404, {'error': 'unknown route'})
+
+    def do_POST(self):
+        path = self.path.split('?', 1)[0]
+        try:
+            length = int(self.headers.get('Content-Length', '0'))
+            raw = self.rfile.read(length).decode('utf-8') if length > 0 else '{}'
+            body = json.loads(raw)
+        except (ValueError, json.JSONDecodeError):
+            return self._json(400, {'error': 'bad JSON body'})
+        try:
+            lat = float(body['lat'])
+            lon = float(body['lon'])
+        except (KeyError, ValueError):
+            return self._json(400, {'error': 'need {"lat": float, "lon": float}'})
+        road_name = body.get('road_name') or body.get('roadName') or None
+        heading = body.get('heading', None)
+        try:
+            heading = float(heading) if heading is not None else None
+        except (ValueError, TypeError):
+            heading = None
+
+        if path == '/api/speedlimit-az':
+            # Keep the historical route recognizable without allowing the
+            # Arizona-only dataset to be queried in practice.
+            return self._json(410, {
+                'error': 'Arizona SQLite provider is archived and disabled',
+                'replacement': 'Use /api/speedlimit for the active all-states provider chain',
+            })
+
+        if path == '/api/speedlimit-arcgis':
+            resp = query_arcgis_for_speed(lat, lon, heading=heading)
+            if resp is None:
+                return self._json(200, {'found': False})
+            return self._json(200, {'found': True, **resp})
+
+        if path == '/api/speedlimit-overpass':
+            resp = query_overpass_for_speed(lat, lon, heading=heading)
+            if resp is None:
+                return self._json(200, {'found': False})
+            return self._json(200, {'found': True, **resp})
+
+        if path == '/api/speedlimit-here':
+            if not HERE_API_KEY or HERE_API_KEY == 'YOUR_HERE_API_KEY':
+                return self._json(200, {'found': False, 'reason': 'HERE API key not configured'})
+            resp = query_here_for_speed(lat, lon, heading=heading)
+            if resp is None:
+                return self._json(200, {'found': False})
+            return self._json(200, {'found': True, **resp})
+
+        if path == '/api/speedlimit-batch':
+            resp = query_here_batch_for_speed(lat, lon, road_name, heading)
+            if resp is None:
+                return self._json(200, {'found': False})
+            return self._json(200, {'found': True, **resp})
+
+        return self._json(404, {'error': 'unknown route'})
+
+    def log_message(self, fmt, *args):
+        # Silence the default per-request stderr access log.
+        pass
+
+
+def main():
+    print('[server] Arizona SQLite provider: archived/disabled')
+    here_status = 'configured' if HERE_API_KEY and HERE_API_KEY != 'YOUR_HERE_API_KEY' else 'NOT configured'
+    print(f'[server] HERE API: {here_status}')
+    print(f'[server] serving http://127.0.0.1:{PORT}/')
+    print('[server] Endpoints:')
+    print('[server]   GET  /')
+    print('[server]   GET  /health')
+    print('[server]   GET  /api/reverse-geocode?lat=&lon=')
+    print('[server]   GET  /api/speedlimit?lat=&lon=&road_name=&heading=')
+    print('[server]   POST /api/speedlimit-az      (410 archived/disabled)')
+    print('[server]   POST /api/speedlimit-arcgis   (lat, lon)')
+    print('[server]   POST /api/speedlimit-overpass (lat, lon)')
+    print('[server]   POST /api/speedlimit-here     (lat, lon)')
+    print('[server]   POST /api/speedlimit-batch    (lat, lon, road_name)')
+    print('[server] Pipeline (iOS mirror): Cache -> HERE Batch -> HERE REST -> ArcGIS -> Overpass -> No Data')
+    print(f'[server] Response cache: {RESPONSE_CACHE.count} entries | Batch cache: {BATCH_CACHE.count} entries')
+    httpd = ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        httpd.server_close()
+
+
+if __name__ == '__main__':
+    main()

@@ -4,6 +4,7 @@ import SwiftUI
 public struct SpeedGaugeView: View {
     @EnvironmentObject var viewModel: DriveViewModel
     @State private var pulseScale: CGFloat = 1.0
+    @State private var pulseTask: Task<Void, Never>?
     
     public var body: some View {
         ZStack {
@@ -18,10 +19,18 @@ public struct SpeedGaugeView: View {
                 context.stroke(trackPath, with: .color(Color(red: 1, green: 1, blue: 1, opacity: 0.05)), style: StrokeStyle(lineWidth: strokeWidth, lineCap: .round))
                 
                 // Speed Arc
-                let maxSpeed: Double = 120.0
+                // The gauge has a fixed 0..270° sweep on the arc — only the
+                // maxSpeed reference value changes between units so the same
+                // needle angle covers 0-120 mph OR 0-193 km/h. 120 mph is the
+                // historical U.S. maximum; 193 km/h ≈ 120 mph × 1.60934, the
+                // equivalent German autobahn cap. `.rounded()` matches the
+                // rounding used by `SpeedFormatting.displayLimit(...)` so the
+                // two surfaces stay numerically consistent.
+                let measurementSystem = SpeedFormatting.measurementSystem()
+                let maxSpeed: Double = SpeedFormatting.isMetric(measurementSystem)
+                    ? (120.0 * SpeedFormatting.kmhPerMph).rounded()  // 193 km/h
+                    : 120.0
                 let speedRatio = min(max(viewModel.speed / maxSpeed, 0), 1)
-                let endAngleDegrees = (speedRatio * 270.0) - 135.0
-                let endAngle = Angle(degrees: endAngleDegrees + 270.0) // Offset for SwiftUI Arc 0 at right
                 
                 var speedPath = Path()
                 speedPath.addArc(center: center, radius: radius, startAngle: .degrees(135), endAngle: .degrees(135 + (speedRatio * 270)), clockwise: false)
@@ -34,7 +43,7 @@ public struct SpeedGaugeView: View {
                 context.stroke(speedPath, with: .color(activeColor.opacity(0.4)), style: StrokeStyle(lineWidth: strokeWidth * 2, lineCap: .round))
                 
                 // Limit Tick Mark
-                let limitRatio = Double(viewModel.limit + SpeedLimitBrain.shared.userBuffer) / maxSpeed
+                let limitRatio = Double(viewModel.limit + viewModel.speedEngine.userBuffer) / maxSpeed
                 let tickAngle = Angle(degrees: 135.0 + (limitRatio * 270.0))
                 
                 var tickPath = Path()
@@ -76,29 +85,51 @@ public struct SpeedGaugeView: View {
                     .stroke(DesignSystem.alertRed, lineWidth: 4)
                     .frame(width: 208, height: 208)
                     .scaleEffect(pulseScale)
-                    .opacity(2.0 - pulseScale) // Fades out as it expands
+                    .opacity(max(0, 2.0 - pulseScale)) // Fades out as it expands
                     .offset(y: 30) // Match the gauge center offset (130-100)
             }
             
-            // Center Readout
+            // Center Readout — speed value + unit honor Settings → UNITS.
+            // `viewModel.speed` is already in the active display unit (the
+            // SpeedEngine converts mph→km/h before publishing), so this
+            // view only has to swap the trailing label.
             VStack(spacing: -5) {
                 Text("\(Int(viewModel.speed))")
                     .font(DesignSystem.displayFont)
                     .foregroundColor(.white)
-                Text("MPH")
+                Text(SpeedFormatting.unitLabelShort(
+                        measurementSystem: SpeedFormatting.measurementSystem()))
                     .font(DesignSystem.labelFont)
                     .foregroundColor(.gray)
             }
             .offset(y: 30)
         }
-        .onChange(of: viewModel.status) { ov, nv in
-            if nv == .over {
-                withAnimation(.easeOut(duration: 1.2).repeatForever(autoreverses: false)) {
-                    pulseScale = 1.3
+        .onChange(of: viewModel.status) { _, newStatus in
+            pulseTask?.cancel()
+            if newStatus == .over {
+                pulseTask = Task { @MainActor in
+                    // Animate a bounded pulse so the gauge does not create an
+                    // unbounded repeat-forever transaction stream while the
+                    // map/HUD is also updating.
+                    while !Task.isCancelled {
+                        withAnimation(.easeOut(duration: 0.55)) {
+                            pulseScale = 1.3
+                        }
+                        try? await Task.sleep(for: .milliseconds(550))
+                        guard !Task.isCancelled else { return }
+                        withAnimation(.easeIn(duration: 0.55)) {
+                            pulseScale = 1.0
+                        }
+                        try? await Task.sleep(for: .milliseconds(550))
+                    }
                 }
             } else {
-                withAnimation { pulseScale = 1.0 }
+                pulseScale = 1.0
             }
+        }
+        .onDisappear {
+            pulseTask?.cancel()
+            pulseTask = nil
         }
     }
 }

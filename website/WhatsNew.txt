@@ -1,0 +1,45 @@
+Speedio hasn't just been updated. It's been rebuilt from the dashboard up.
+
+This release turns a speed readout into a full driving companion: a steadier live map, real turn-by-turn navigation, a proper CarPlay experience, smarter alerts, and a dashboard that actually explains how you're driving. A lot of what used to feel "mostly working" is now steady, deliberate, and easier to use while moving.
+
+WHAT'S NEW
+
+Live map that behaves like a map
+The drive map now tracks and frames the road with far less jitter, especially at low speed, during turns, and while navigation is active. Route guidance, zoom behavior, and camera framing have been reworked so the map feels calmer instead of twitchy.
+
+Turn-by-turn navigation that's easier to hear and trust
+Navigation has a cleaner voice pipeline, more reliable turn guidance, tighter rerouting, and a better sense of where you are on the route. ETAs and remaining-distance estimates are more grounded, and direction cards stay synchronized with the route instead of drifting out of step.
+
+CarPlay is now a real driving experience
+CarPlay has been rebuilt from a placeholder into a full driving surface with a destination flow, route stop support, clearer session actions, and better handling of the common TestFlight-reported glitches around buttons, search, alerts, and navigation handoff between iPhone and CarPlay.
+
+Faster, smarter speed limit lookups
+Speed limits no longer come from a single thin pipeline. The app now chains multiple map and road-source lookups, caches results more aggressively, and is much pickier about rejecting stale or cross-street answers. The practical result: fewer ghost limits, fewer wrong-route surprises, and a limit badge that's more likely to be right where you're actually driving.
+
+Alerts that fit how you drive
+The alert system got a serious overhaul. You can choose your alert style, fine-tune when alerts fire, and record a custom vibration pattern. There's a snooze/"I Know" option for when you already know you're over, and alerts are much better at not firing for unknown, buffered, or irrelevant limits. Background vibration fallback is also in for when the app isn't in the foreground.
+
+Better session history
+Past drives are easier to review, rename, and manage, with a more stable sessions experience and fewer crashes when you interact with history.
+
+Siri and voice-driven session queries
+The app now exposes more of its driving state for voice interaction, including session-aware queries so you can ask about recent or today's drives. The app-intent and semantic-search plumbing has been expanded so future Siri and Apple Intelligence questions have something real to talk to.
+
+Design and first-run polish
+The interface has had a lot of iterative polish: glass-style surfaces where appropriate, tighter HUD layout, refined buttons and spacing, easier onboarding flow, and a cleaner first-run path into the app. Focus Mode is also more complete, with a more immersive driving screen and landscape support.
+
+BUG FIXES AND STABILITY
+
+This version includes a long tail of fixes across the map, navigation, CarPlay, alerts, audio, haptics, speed-limit resolution, onboarding, search, and session handling. The high-level themes:
+- fewer map jitter and tracking glitches
+- fewer audio and voice glitches during navigation and alerts
+- fewer CarPlay crashes, unresponsive buttons, and stale-state issues
+- better behavior when limits are unknown, stale, or mismatched to the road
+- more reliable session recording and session-list behavior
+- smoother startup, search, and in-drive interactions
+- more consistent alert behavior so it's less likely to fire for the wrong thing
+- a number of build, signing, and distribution fixes that unblock testing and release
+
+If a previous version felt like it worked "most of the time," this one is aimed at making it feel dependable most of the time, every time.
+
+Drive smarter. Stay aware. Master the road.

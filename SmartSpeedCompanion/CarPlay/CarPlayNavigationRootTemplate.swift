@@ -1,164 +1,1486 @@
 // CarPlayNavigationRootTemplate.swift
-// Manages the CarPlay 75/25 visual map template layout and navigation components.
+// Enhanced root template — comprehensive HUD, navigation, and named locations.
+// Settings are intentionally NOT shown on CarPlay; they live only in the iPhone app.
 
 import CarPlay
 import Combine
+import MapKit
+import Speech
+import AVFoundation
+import UIKit
 
-class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate {
+@MainActor
+class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTemplateDelegate {
 
     @MainActor let mapTemplate: CPMapTemplate
     @MainActor private weak var interfaceController: CPInterfaceController?
     @MainActor private let viewModel: DriveViewModel
     @MainActor private var navigationManager: CarPlayNavigationManager!
-    
+
+    // Sub-controllers
+    @MainActor private lazy var namedLocationsController = CarPlayNamedLocationsController(
+        interfaceController: interfaceController, viewModel: viewModel
+    )
+
     private var cancellables = Set<AnyCancellable>()
     @MainActor private var isAlertPresented = false
-    
-    // Top bar elements
+    @MainActor private var isHandlingCarPlayTrip: Bool = false
+
+    // HUD Bar Buttons
     @MainActor private var speedButton: CPBarButton!
     @MainActor private var limitButton: CPBarButton!
+    @MainActor private var roadNameButton: CPBarButton!
+    @MainActor private var sessionTimerButton: CPBarButton!
+    // Last limit value rendered into the limit button's sign image. The HUD
+    // update runs on the ~1 Hz speed tick; caching by displayed value keeps
+    // UIKit sign rendering to actual limit changes only.
+    @MainActor private var lastRenderedSignLimit: Int = -1
+
+    // Map Buttons
+    @MainActor private var searchButton: CPMapButton!
+    @MainActor private var voiceSearchButton: CPMapButton!
+    @MainActor private var savedPlacesButton: CPMapButton!
+    @MainActor private var addStopButton: CPMapButton!
+    @MainActor private var startStopButton: CPMapButton!
+    @MainActor private var muteButton: CPMapButton!
+    @MainActor private var snoozeButton: CPMapButton!
+    // CarPlay Audio App (com.apple.developer.carplay-audio): the Now
+    // Playing template is required for the audio-app category, so the map
+    // gets a dedicated button that pushes CPNowPlayingTemplate with live
+    // drive state (speed / road / status) rendered via
+    // CarPlayNowPlayingController.
+    @MainActor private var nowPlayingButton: CPMapButton!
+    @MainActor private var wasSnoozeVisible: Bool = false
+    // Incremented on every + category tap; results only push if they belong
+    // to the latest request, so a slow earlier search can't overwrite a
+    // newer category's results (mirrors PlanB's searchGeneration pattern).
+    @MainActor private var stopSearchGeneration: UInt64 = 0
+    // Same guard for the live search box: each keystroke bumps this, and only
+    // the newest query's results may be delivered to the CPSearchTemplate.
+    @MainActor private var searchGeneration: UInt64 = 0
+    // Maps CPListItem → MKMapItem for the current CPSearchTemplate results
+    // so the selectedResult delegate can identify which item was tapped.
+    @MainActor private var searchItemMap: [ObjectIdentifier: MKMapItem] = [:]
+    // The most recent search results (in list order). Used as a fallback in
+    // `selectedResult` when the item-identity map is empty — the system may
+    // call `updatedSearchText` (clearing the map) right before/after a tap,
+    // which previously made result selection silently do nothing.
+    @MainActor private var latestSearchResults: [MKMapItem] = []
+    // Query that produced `latestSearchResults`. The search-button delegate
+    // callback does not provide the text itself, so retain the latest query
+    // and only reuse results when they belong to that exact query.
+    @MainActor private var latestSearchQuery: String = ""
+    @MainActor private var latestSearchResultsQuery: String = ""
+    // The list pushed after the keyboard Search button is pressed. Keeping a
+    // reference prevents repeated Search presses from stacking duplicate lists.
+    @MainActor private weak var activeSubmittedSearchResultsTemplate: CPListTemplate?
+    // Single-flight latch so a result tap presents the trip preview at most
+    // once, even when CarPlay fires BOTH the row handler and the
+    // `selectedResult` delegate for the same tap. Cleared once the preview
+    // has been handed to CPMapTemplate.
+    @MainActor private var isPresentingTripPreview = false
+    // Search result callbacks can arrive through both CarPlay's delegate and
+    // an older CPListItem handler during an SDK transition. Serialize the
+    // dismissal/presentation handoff so neither path can leave the search
+    // template covering the directions preview.
+    @MainActor private var isSelectingSearchResult = false
+    // Prevents duplicate CarPlay result taps while an add-stop route
+    // recalculation is in flight.
+    @MainActor private var isAddingStopInProgress = false
+    // Handoff latches prevent a phone-owned route from being installed into
+    // the CarPlay session more than once when several @Published properties
+    // change during one navigation start.
+    @MainActor private var lastPhoneNavigationHandoffKey: String?
+    @MainActor private var lastPhoneDestinationPreviewKey: String?
+    // CarPlay enforces a small maximum template hierarchy. Keep references
+    // to the active add-stop templates so repeated taps and late search
+    // completions cannot push duplicate screens onto the stack.
+    @MainActor private weak var activeAddStopTemplate: CPGridTemplate?
+    @MainActor private weak var activeStopOptionsTemplate: CPListTemplate?
+    @MainActor private weak var activeStopsListTemplate: CPListTemplate?
+    @MainActor private weak var activeSearchTemplate: CPSearchTemplate?
+    @MainActor private var isTemplatePushInFlight = false
+    @MainActor private var isRemovingStopInProgress = false
+    // "Ask To Siri" voice destination search. Lazily created on the first
+    // mic tap; a single instance guards against double-taps while the
+    // listening alert is being presented.
+    @MainActor private var voiceSearchController: CarPlayVoiceSearchController?
 
     @MainActor
-    init(
-        interfaceController: CPInterfaceController,
-        viewModel: DriveViewModel,
-        navigationManager: CarPlayNavigationManager? = nil
-    ) {
+    private func isTemplateOnStack(_ template: CPTemplate?) -> Bool {
+        guard let template else { return false }
+        return interfaceController?.templates.contains { $0 === template } == true
+    }
+
+    @MainActor
+    private func clearInactiveAddStopTemplates() {
+        // `templates` can lag while a push animation is in flight. Do not
+        // clear weak references during that window or a second tap could
+        // create another template before CarPlay finishes the first push.
+        guard !isTemplatePushInFlight else { return }
+        if !isTemplateOnStack(activeAddStopTemplate) { activeAddStopTemplate = nil }
+        if !isTemplateOnStack(activeStopOptionsTemplate) { activeStopOptionsTemplate = nil }
+        if !isTemplateOnStack(activeStopsListTemplate) { activeStopsListTemplate = nil }
+        if !isTemplateOnStack(activeSearchTemplate) { activeSearchTemplate = nil }
+    }
+
+    @MainActor
+    private func invalidateAddStopSearch() {
+        stopSearchGeneration &+= 1
+        clearInactiveAddStopTemplates()
+    }
+
+    @MainActor
+    private func pushAddStopTemplate(_ template: CPGridTemplate) {
+        clearInactiveAddStopTemplates()
+        guard !isTemplatePushInFlight,
+              !isTemplateOnStack(activeAddStopTemplate),
+              let interfaceController else { return }
+        activeAddStopTemplate = template
+        isTemplatePushInFlight = true
+        interfaceController.pushTemplate(template, animated: true) { [weak self] _, _ in
+            Task { @MainActor in self?.isTemplatePushInFlight = false }
+        }
+    }
+
+    @MainActor
+    private func pushStopOptionsTemplate(_ template: CPListTemplate) {
+        clearInactiveAddStopTemplates()
+        guard !isTemplatePushInFlight,
+              !isTemplateOnStack(activeStopOptionsTemplate),
+              let interfaceController else { return }
+        activeStopOptionsTemplate = template
+        isTemplatePushInFlight = true
+        interfaceController.pushTemplate(template, animated: true) { [weak self] _, _ in
+            Task { @MainActor in self?.isTemplatePushInFlight = false }
+        }
+    }
+
+    @MainActor
+    private func pushStopsListTemplate(_ template: CPListTemplate) {
+        clearInactiveAddStopTemplates()
+        guard !isTemplatePushInFlight,
+              !isTemplateOnStack(activeStopsListTemplate),
+              let interfaceController else { return }
+        activeStopsListTemplate = template
+        isTemplatePushInFlight = true
+        interfaceController.pushTemplate(template, animated: true) { [weak self] _, _ in
+            Task { @MainActor in self?.isTemplatePushInFlight = false }
+        }
+    }
+
+    @MainActor
+    init(interfaceController: CPInterfaceController, viewModel: DriveViewModel) {
         self.interfaceController = interfaceController
         self.viewModel = viewModel
         self.mapTemplate = CPMapTemplate()
-        
         super.init()
-        
-        self.navigationManager = navigationManager ?? CarPlayNavigationManager(viewModel: viewModel, mapTemplate: mapTemplate)
-        
+        self.navigationManager = CarPlayNavigationManager(viewModel: viewModel, mapTemplate: mapTemplate)
+        // Keep the Now Playing controller fed with live drive state so the
+        // template (if on screen) always mirrors speed/road/status.
+        CarPlayNowPlayingController.shared.bind(viewModel: viewModel)
         setupTemplate()
         bindViewModel()
     }
 
+    // MARK: - iPhone → CarPlay Handoff
+
+    /// If navigation is already active on iPhone when CarPlay connects,
+    /// immediately start a CarPlay navigation session so the driver sees
+    /// turn-by-turn guidance without having to re-select the destination.
+    ///
+    /// The shared `DriveViewModel` / `NavigationCoordinator` already holds
+    /// the active route and destination — we just need to install a new
+    /// `CPNavigationSession` on the CarPlay map template so the system
+    /// UI (maneuver cards, ETA banner, next-turn icons) renders.
+    func resumeActiveNavigationIfAny() {
+        // Capture values in locals to prevent a TOCTOU race: if navigation
+        // ends on the phone between our guard checks and the startNavigation
+        // call, the coordinator state would be stale.
+        guard viewModel.isNavigating else { return }
+        let route = viewModel.navigationCoordinator.currentRoute
+        let destination = viewModel.navigationCoordinator.destination
+        guard let route, let destination else { return }
+        // Re-check after capture: if navigation ended between our
+        // isNavigating check and the locals capture, bail out rather
+        // than starting an orphaned CarPlay session.
+        guard viewModel.isNavigating else { return }
+        let key = navigationHandoffKey(route: route, destination: destination)
+        // `bindViewModel()` can receive the current published route while the
+        // root is being created. Avoid installing the same route twice when
+        // the one-shot connection handoff runs immediately afterward.
+        guard key != lastPhoneNavigationHandoffKey else { return }
+        lastPhoneNavigationHandoffKey = key
+        navigationManager.startNavigation(route: route, destination: destination)
+    }
+
+    /// Begins the placeholder CPNavigationSession that surfaces the live
+    /// speed/limit banner on the head unit WITHOUT any turn-by-turn route —
+    /// the CarPlay "session without navigation" surface. Called once the map
+    /// template is installed as root (startNavigationSession is only valid on
+    /// a template that is in the hierarchy). A no-op while real navigation is
+    /// active; the real trip's session replaces the placeholder.
+    func beginSessionWithoutNavigationIfNeeded() {
+        navigationManager.beginSessionWithoutNavigation()
+    }
+
+    /// Clean up the active CarPlay navigation session without ending
+    /// phone-side navigation. Called by CarPlaySceneDelegate when the
+    /// user disconnects so the system framework doesn't leak the session.
+    func finishActiveNavigationSession() {
+        navigationManager.finishCurrentSession()
+    }
+
     @MainActor
     private func setupTemplate() {
-        // Navigation Bar Buttons (Top - Representing the 25% overlay conceptually)
-        speedButton = CPBarButton(title: "0 MPH") { _ in }
-        limitButton = CPBarButton(title: "LIMIT 0") { _ in }
-        mapTemplate.leadingNavigationBarButtons = [speedButton]
-        mapTemplate.trailingNavigationBarButtons = [limitButton]
-        
-        // Map Buttons (Right Side)
-        let searchButton = CPMapButton { [weak self] _ in
+        mapTemplate.automaticallyHidesNavigationBar = false
+        mapTemplate.mapDelegate = self
+        // Guidance chrome in the app's glass material instead of CarPlay's
+        // default red maneuver banner — the same dark translucent glass the
+        // system renders for the bottom-left trip-estimates panel, so the
+        // top directions banner and the bottom info panel read as one
+        // material (user request: "instead of Red, keep it to the liquid
+        // glass color").
+        mapTemplate.guidanceBackgroundColor = CarPlayUI.guidanceGlass
+
+        let system = SpeedFormatting.measurementSystem()
+        let unitShort = SpeedFormatting.unitLabelShort(measurementSystem: system)
+
+        speedButton = CPBarButton(title: "0 \(unitShort)") { [weak self] _ in
+            Task { @MainActor in self?.presentTripInfo() }
+        }
+        roadNameButton = CPBarButton(title: "") { _ in }
+        // Sign image arrives on the first updateHUD tick; empty title avoids
+        // a flash of "LIMIT --" text before the image lands.
+        limitButton = CPBarButton(title: "") { _ in }
+        sessionTimerButton = CPBarButton(title: "") { [weak self] _ in
+            Task { @MainActor in self?.presentDriveDetails() }
+        }
+
+        mapTemplate.leadingNavigationBarButtons = [speedButton, roadNameButton]
+        mapTemplate.trailingNavigationBarButtons = [limitButton, sessionTimerButton]
+
+        // Map buttons — colored circular badges for a Google/Apple Maps look.
+        // NOTE: No Settings button — settings are phone-only by design.
+        searchButton = CPMapButton { [weak self] _ in
             Task { @MainActor in self?.presentSearch() }
         }
-        searchButton.image = UIImage(systemName: "magnifyingglass")!
-        
-        let startButton = CPMapButton { [weak self] _ in
-            Task { @MainActor in self?.viewModel.startSession() }
-        }
-        startButton.image = UIImage(systemName: "play.fill")!
+        searchButton.image = CarPlayUI.circleBadge(systemName: "magnifyingglass", color: CarPlayUI.cyan)
+        searchButton.focusedImage = CarPlayUI.circleBadge(systemName: "magnifyingglass", color: CarPlayUI.cyan, size: 52)
 
-        let endButton = CPMapButton { [weak self] _ in
-            Task { @MainActor in self?.viewModel.endSession() }
+        // "Ask To Siri": speak a destination instead of typing. CarPlay-
+        // only entry point; the phone UI never shows this button.
+        voiceSearchButton = CPMapButton { [weak self] _ in
+            Task { @MainActor in self?.presentVoiceSearch() }
         }
-        endButton.image = UIImage(systemName: "stop.fill")!
+        voiceSearchButton.image = CarPlayUI.circleBadge(systemName: "mic.fill", color: CarPlayUI.cyan)
+        voiceSearchButton.focusedImage = CarPlayUI.circleBadge(systemName: "mic.fill", color: CarPlayUI.cyan, size: 52)
 
-        let muteButton = CPMapButton { [weak self] _ in
-            Task { @MainActor in self?.navigationManager.setMuted(true) }
+        savedPlacesButton = CPMapButton { [weak self] _ in
+            Task { @MainActor in self?.namedLocationsController.showSavedPlaces() }
         }
-        muteButton.image = UIImage(systemName: "speaker.slash.fill")!
+        savedPlacesButton.image = CarPlayUI.circleBadge(systemName: "bookmark.fill", color: CarPlayUI.pink)
+        savedPlacesButton.focusedImage = CarPlayUI.circleBadge(systemName: "bookmark.fill", color: CarPlayUI.pink, size: 52)
 
-        mapTemplate.mapButtons = [searchButton, startButton, endButton, muteButton]
+        addStopButton = CPMapButton { [weak self] _ in
+            Task { @MainActor in self?.presentAddStopSearch() }
+        }
+        addStopButton.image = CarPlayUI.circleBadge(systemName: "plus", color: CarPlayUI.orange)
+        addStopButton.focusedImage = CarPlayUI.circleBadge(systemName: "plus", color: CarPlayUI.orange, size: 52)
+
+        startStopButton = CPMapButton { [weak self] _ in
+            Task { @MainActor in
+                guard let self = self else { return }
+                if self.viewModel.isRecording { self.viewModel.endSession() }
+                else { self.viewModel.startSession() }
+            }
+        }
+        startStopButton.image = CarPlayUI.circleBadge(systemName: "play.fill", color: CarPlayUI.neonGreen)
+        startStopButton.focusedImage = CarPlayUI.circleBadge(systemName: "play.fill", color: CarPlayUI.neonGreen, size: 52)
+
+        muteButton = CPMapButton { [weak self] button in
+            Task { @MainActor in
+                guard let self = self else { return }
+                let newMuted = !self.navigationManager.getMuted()
+                self.navigationManager.setMuted(newMuted)
+                button.image = CarPlayUI.circleBadge(systemName: newMuted ? "speaker.slash.fill" : "speaker.wave.2.fill",
+                                                     color: newMuted ? CarPlayUI.amber : CarPlayUI.blue)
+                button.focusedImage = button.image
+            }
+        }
+        muteButton.image = CarPlayUI.circleBadge(systemName: "speaker.wave.2.fill", color: CarPlayUI.blue)
+        muteButton.focusedImage = CarPlayUI.circleBadge(systemName: "speaker.wave.2.fill", color: CarPlayUI.blue, size: 52)
+
+        snoozeButton = CPMapButton { [weak self] _ in
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.viewModel.alertEngine.snoozeFor(15)
+                self.updateMapButtons()
+            }
+        }
+        snoozeButton.image = CarPlayUI.circleBadge(systemName: "hand.raised.fill", color: CarPlayUI.alertRed)
+        snoozeButton.focusedImage = CarPlayUI.circleBadge(systemName: "hand.raised.fill", color: CarPlayUI.alertRed, size: 52)
+
+        nowPlayingButton = CPMapButton { [weak self] _ in
+            Task { @MainActor in self?.presentNowPlaying() }
+        }
+        nowPlayingButton.image = CarPlayUI.circleBadge(systemName: "music.note", color: CarPlayUI.purple)
+        nowPlayingButton.focusedImage = CarPlayUI.circleBadge(systemName: "music.note", color: CarPlayUI.purple, size: 52)
+
+        mapTemplate.mapButtons = [
+            // Start/Stop FIRST: head units render only the first handful of
+            // map buttons (the same truncation that hid the appended snooze
+            // button — see updateMapButtons). Sitting 6th of 7, the driver's
+            // primary "start a session without navigation" control was cut
+            // off on most screens, making a drive session unreachable from
+            // CarPlay unless a route was started.
+            startStopButton,
+            searchButton, voiceSearchButton, addStopButton, savedPlacesButton,
+            muteButton, nowPlayingButton
+        ]
+
+        Task { @MainActor in
+            let context = AppDelegate.sharedModelContainer.mainContext
+            viewModel.loadVehicleProfiles(context: context)
+        }
     }
 
     @MainActor
     private func bindViewModel() {
         viewModel.$speed
-            .combineLatest(viewModel.$limit, viewModel.$status)
+            .combineLatest(viewModel.$limit, viewModel.$status, viewModel.$currentRoadName)
             .receive(on: RunLoop.main)
-            .sink { [weak self] speed, limit, status in
-                self?.updateHUD(speed: speed, limit: limit, status: status)
+            .sink { [weak self] speed, limit, status, roadName in
+                self?.updateHUD(speed: speed, limit: limit, status: status, roadName: roadName)
                 self?.handleAlerts(speed: speed, limit: limit, status: status)
+            }
+            .store(in: &cancellables)
+
+        viewModel.$sessionDuration
+            .combineLatest(viewModel.$isRecording)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] duration, isRecording in
+                self?.updateSessionTimer(duration: duration, isRecording: isRecording)
+            }
+            .store(in: &cancellables)
+
+        viewModel.$isRecording
+            .receive(on: RunLoop.main)
+            .sink { [weak self] isRecording in
+                guard let self = self else { return }
+                self.startStopButton.image = CarPlayUI.circleBadge(systemName: isRecording ? "stop.fill" : "play.fill",
+                                                                   color: isRecording ? CarPlayUI.alertRed : CarPlayUI.neonGreen)
+                self.startStopButton.focusedImage = self.startStopButton.image
+            }
+            .store(in: &cancellables)
+
+        // 1-second timer re-evaluates alert presentation (which also refreshes
+        // snooze-button visibility) so both correctly reappear when the
+        // 15-second snooze window expires (the @Published `$snoozedUntil`
+        // only fires on explicit .set, not when time passes and the Date
+        // becomes stale).
+        Timer.publish(every: 1.0, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.handleAlerts(speed: self.viewModel.speed,
+                                  limit: self.viewModel.limit,
+                                  status: self.viewModel.status)
+            }
+            .store(in: &cancellables)
+
+        // The add-stop button is always enabled — category search (gas/coffee/food)
+        // works without an active route; a route is only needed when confirming a stop.
+
+        // Keep CarPlay synchronized when the phone selects a destination or
+        // starts navigation while CarPlay is already connected. The one-shot
+        // connection handoff above cannot handle that common ordering.
+        viewModel.navigationCoordinator.$destination
+            .combineLatest(viewModel.$availableRoutes,
+                           viewModel.navigationCoordinator.$currentRoute,
+                           viewModel.$isNavigating)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] destination, availableRoutes, route, isNavigating in
+                guard let self, !self.isHandlingCarPlayTrip else { return }
+
+                guard let destination else {
+                    self.lastPhoneDestinationPreviewKey = nil
+                    self.lastPhoneNavigationHandoffKey = nil
+                    return
+                }
+
+                if isNavigating, let route {
+                    let key = self.navigationHandoffKey(route: route, destination: destination)
+                    guard key != self.lastPhoneNavigationHandoffKey else { return }
+                    self.lastPhoneNavigationHandoffKey = key
+                    // The phone may have a trip preview visible on CarPlay
+                    // from the destination-selection event. Replace it with
+                    // active guidance before starting the session.
+                    self.mapTemplate.hideTripPreviews()
+                    self.navigationManager.startNavigation(route: route, destination: destination)
+                } else if !isNavigating, route == nil, !availableRoutes.isEmpty {
+                    // A phone search selection is useful on CarPlay even
+                    // before the user taps a route on the phone: wait until
+                    // route calculation has completed, then show the same
+                    // CarPlay trip preview so the driver can start guidance
+                    // from the head unit without re-searching. The route-ready
+                    // gate avoids showing a duplicate/empty preview during the
+                    // short interval where destination is published first.
+                    let key = self.destinationPreviewKey(for: destination)
+                    guard key != self.lastPhoneDestinationPreviewKey else { return }
+                    self.lastPhoneDestinationPreviewKey = key
+                    self.presentTripPreviewOnce(for: destination)
+                }
             }
             .store(in: &cancellables)
     }
 
     @MainActor
-    private func updateHUD(speed: Double, limit: Int, status: SpeedStatus) {
-        speedButton.title = "\(Int(speed)) MPH"
-        limitButton.title = "LIMIT \(limit)"
-        
-        let circleColor: UIColor
-        switch status {
-        case .over: circleColor = UIColor(red: 1.0, green: 0.24, blue: 0.44, alpha: 1.0) // red
-        case .warning: circleColor = UIColor(red: 1.0, green: 0.72, blue: 0.0, alpha: 1.0) // amber
-        case .safe: circleColor = UIColor(red: 0.0, green: 1.0, blue: 0.62, alpha: 1.0) // green
-        }
-        
-        limitButton.image = statusCircleImage(color: circleColor, size: 20)
+    private func destinationPreviewKey(for destination: MKMapItem) -> String {
+        let coordinate = destination.placemark.coordinate
+        return "\(coordinate.latitude),\(coordinate.longitude)|\(destination.name ?? "")"
     }
-    
-    private func statusCircleImage(color: UIColor, size: CGFloat = 44) -> UIImage {
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: size, height: size))
-        return renderer.image { ctx in
-            color.setFill()
-            ctx.cgContext.fillEllipse(in: CGRect(x: 2, y: 2, width: size-4, height: size-4))
+
+    @MainActor
+    private func navigationHandoffKey(route: MKRoute, destination: MKMapItem) -> String {
+        let coordinate = destination.placemark.coordinate
+        let points = route.polyline.points()
+        let count = route.polyline.pointCount
+        let first = count > 0 ? points[0].coordinate : coordinate
+        let last = count > 0 ? points[count - 1].coordinate : coordinate
+        return String(format: "%.5f,%.5f|%.1f|%.1f|%d|%.5f,%.5f|%.5f,%.5f",
+                      coordinate.latitude, coordinate.longitude,
+                      route.distance, route.expectedTravelTime, count,
+                      first.latitude, first.longitude, last.latitude, last.longitude)
+    }
+
+    @MainActor
+    private func updateHUD(speed: Double, limit: Int, status: SpeedStatus, roadName: String?) {
+        let system = SpeedFormatting.measurementSystem()
+        let unitShort = SpeedFormatting.unitLabelShort(measurementSystem: system)
+        let displayLimit = SpeedFormatting.displayLimit(forMph: limit, measurementSystem: system)
+        speedButton.title = "\(Int(speed)) \(unitShort)"
+        limitButton.title = ""
+        // US MUTCD R2-1 sign on the CarPlay top bar — the same shared
+        // renderer the phone HUD uses, so both surfaces are identical.
+        // Re-rendered only when the displayed limit actually changes (the
+        // ~1 Hz HUD tick would otherwise churn UIKit drawing every second).
+        if displayLimit != lastRenderedSignLimit {
+            lastRenderedSignLimit = displayLimit
+            // CPBarButton has no focusedImage (that's CPMapButton); the
+            // plain image is all the top-bar button needs.
+            limitButton.image = CarPlayUI.speedLimitSign(value: displayLimit, unit: unitShort, size: 40)
+        }
+        roadNameButton.title = (roadName?.isEmpty == false) ? roadName! : ""
+        // Mirror the same snapshot to the CarPlay Now Playing screen so it
+        // never shows a stale speed/road/status while the driver glances at
+        // it. Cheap when the template isn't visible.
+        CarPlayNowPlayingController.shared.refresh()
+    }
+
+    /// CarPlay audio apps must expose the Now Playing template. Push
+    /// `CPNowPlayingTemplate` (singleton) with live drive state — a music
+    /// note button on the map. Uses the same single-flight push guard as
+    /// the other flows so a double-tap cannot stack a second copy.
+    @MainActor
+    private func presentNowPlaying() {
+        clearInactiveAddStopTemplates()
+        guard !isTemplatePushInFlight,
+              !isTemplateOnStack(CPNowPlayingTemplate.shared),
+              let interfaceController else { return }
+        isTemplatePushInFlight = true
+        CarPlayNowPlayingController.shared.prepareForPresentation()
+        interfaceController.pushTemplate(CPNowPlayingTemplate.shared, animated: true) { [weak self] _, _ in
+            Task { @MainActor in self?.isTemplatePushInFlight = false }
+        }
+    }
+
+    @MainActor
+    private func updateSessionTimer(duration: TimeInterval, isRecording: Bool) {
+        if !isRecording {
+            sessionTimerButton.title = ""
+            sessionTimerButton.image = nil
+            if mapTemplate.trailingNavigationBarButtons.contains(sessionTimerButton) {
+                mapTemplate.trailingNavigationBarButtons = [limitButton]
+            }
+            return
+        }
+        sessionTimerButton.image = CarPlayUI.dot(color: CarPlayUI.alertRed)
+        let t = Int(duration)
+        if t >= 3600 {
+            sessionTimerButton.title = String(format: "%d:%02d:%02d", t/3600, (t%3600)/60, t%60)
+        } else {
+            sessionTimerButton.title = String(format: "%02d:%02d", t/60, t%60)
+        }
+        if !mapTemplate.trailingNavigationBarButtons.contains(sessionTimerButton) {
+            mapTemplate.trailingNavigationBarButtons = [limitButton, sessionTimerButton]
+        }
+    }
+
+    @MainActor
+    private func updateMapButtons() {
+        let showSnooze = viewModel.status == .over && !viewModel.alertEngine.isSnoozed
+        if showSnooze && !wasSnoozeVisible {
+            // Insert at the FRONT, not append: head units render only the
+            // first handful of map buttons, so an appended snooze button
+            // (8th of 8) never appeared on screen — drivers tapping where it
+            // should be hit nothing (the other half of the "I Know doesn't
+            // work" reports). Front placement guarantees visibility during
+            // the overspeed window it exists for.
+            var b = mapTemplate.mapButtons; b.insert(snoozeButton, at: 0); mapTemplate.mapButtons = b
+            wasSnoozeVisible = true
+        } else if !showSnooze && wasSnoozeVisible {
+            var b = mapTemplate.mapButtons; b.removeAll { $0 === snoozeButton }; mapTemplate.mapButtons = b
+            wasSnoozeVisible = false
         }
     }
 
     @MainActor
     private func handleAlerts(speed: Double, limit: Int, status: SpeedStatus) {
-        if status == .over && !isAlertPresented {
-            presentAlert(speed: speed, limit: limit)
-        } else if status != .over && isAlertPresented {
-            interfaceController?.dismissTemplate(animated: true, completion: nil)
+        // Honor the "I Know (15s)" snooze for its full window: this runs on
+        // every ~1 Hz speed tick, and without the isSnoozed check the alert
+        // was re-presented 1–3 s after the user dismissed it (FB: "It's
+        // hiding the prompt but shows it back within 3 seconds").
+        let snoozed = viewModel.alertEngine.isSnoozed
+        if status == .over && !snoozed && !isAlertPresented {
+            presentNavigationAlert(speed: speed, limit: limit)
+        } else if snoozed && isAlertPresented {
+            // Snooze started from the map button while the banner was up.
             isAlertPresented = false
+            mapTemplate.dismissNavigationAlert(animated: true, completion: { _ in })
+        } else if status != .over && isAlertPresented {
+            // Dropped back under the limit: clear the flag and let the
+            // banner finish its natural duration.
+            isAlertPresented = false
+        }
+        updateMapButtons()
+    }
+
+    @MainActor
+    private func presentNavigationAlert(speed: Double, limit: Int) {
+        let system = SpeedFormatting.measurementSystem()
+        let unitShort = SpeedFormatting.unitLabelShort(measurementSystem: system)
+        let displayLimit = SpeedFormatting.displayLimit(forMph: limit, measurementSystem: system)
+        let diff = Int(speed) - displayLimit
+        let ok = CPAlertAction(title: "OK", style: .default) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.isAlertPresented = false
+                await self.mapTemplate.dismissNavigationAlert(animated: true)
+            }
+        }
+        let snooze = CPAlertAction(title: "I Know (15s)", style: .default) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.viewModel.alertEngine.snoozeFor(15)
+                self.isAlertPresented = false
+                await self.mapTemplate.dismissNavigationAlert(animated: true)
+            }
+        }
+        let alert = CPNavigationAlert(
+            titleVariants: ["⚠ SLOW DOWN", "Speeding +\(diff) \(unitShort)"],
+            subtitleVariants: ["Limit is \(displayLimit) \(unitShort). Watch your speed."],
+            image: nil, primaryAction: ok, secondaryAction: snooze, duration: 5.0
+        )
+        isAlertPresented = true
+        mapTemplate.present(navigationAlert: alert, animated: true)
+    }
+
+    // MARK: - Info Cards
+
+    @MainActor
+    private func presentTripInfo() {
+        let system = SpeedFormatting.measurementSystem()
+        let unitShort = SpeedFormatting.unitLabelShort(measurementSystem: system)
+        let unitLong = SpeedFormatting.unitLabelLong(measurementSystem: system)
+        let displayLimit = SpeedFormatting.displayLimit(forMph: viewModel.limit, measurementSystem: system)
+        let displayBuffer = Int(SpeedFormatting.displayBuffer(forMph: Double(viewModel.speedEngine.userBuffer), measurementSystem: system))
+        let activeVehicle = viewModel.vehicleProfiles.first(where: { $0.isActive })?.name ?? "Primary"
+
+        var items: [CPInformationItem] = [
+            CPInformationItem(title: "Speed", detail: "\(Int(viewModel.speed)) \(unitShort)"),
+            CPInformationItem(title: "Speed Limit", detail: "\(displayLimit) \(unitShort)"),
+            CPInformationItem(title: "Buffer", detail: "+\(displayBuffer) \(unitLong)"),
+        ]
+        if let road = viewModel.currentRoadName, !road.isEmpty {
+            items.append(CPInformationItem(title: "Road", detail: road))
+        }
+        items += [
+            CPInformationItem(title: "Vehicle", detail: activeVehicle),
+            CPInformationItem(title: "Status", detail: viewModel.status.rawValue.uppercased()),
+        ]
+        let template = CPInformationTemplate(title: "Current Drive", layout: .twoColumn, items: items,
+            actions: [CPTextButton(title: "Dismiss", textStyle: .cancel, handler: { [weak self] _ in
+                self?.interfaceController?.popTemplate(animated: true, completion: nil) })]
+        )
+        interfaceController?.pushTemplate(template, animated: true, completion: nil)
+    }
+
+    @MainActor
+    private func presentDriveDetails() {
+        guard viewModel.isRecording else { return }
+        let system = SpeedFormatting.measurementSystem()
+        let unitShort = SpeedFormatting.unitLabelShort(measurementSystem: system)
+        let t = Int(viewModel.sessionDuration)
+        let durStr = t >= 3600 ? String(format: "%d h %02d m", t/3600, (t%3600)/60) : String(format: "%d min %02d s", t/60, t%60)
+        // `viewModel.speed` is already in the active display unit. Convert
+        // the estimated session distance into the same unit without treating
+        // metric km/h as mph.
+        let distanceInDisplayUnits = viewModel.sessionDuration > 0
+            ? viewModel.speed * (viewModel.sessionDuration / 3600.0)
+            : 0
+        let distStr = SpeedFormatting.isMetric(system)
+            ? String(format: "%.1f km", distanceInDisplayUnits)
+            : String(format: "%.1f mi", distanceInDisplayUnits)
+        let items: [CPInformationItem] = [
+            CPInformationItem(title: "Duration", detail: durStr),
+            CPInformationItem(title: "Distance", detail: distStr),
+            CPInformationItem(title: "Current Speed", detail: "\(Int(viewModel.speed)) \(unitShort)"),
+            CPInformationItem(title: "Status", detail: viewModel.isRecording ? "Recording" : "Stopped"),
+        ]
+        let template = CPInformationTemplate(title: "Drive Session", layout: .twoColumn, items: items,
+            actions: [
+                // CarPlay renders `.cancel` as the destructive/red action
+                // and `.normal` as the neutral/white action. Keep the
+                // irreversible session-ending action visually prominent and
+                // the safe dismiss action neutral, matching TestFlight
+                // feedback from build 2.3.0.
+                CPTextButton(title: "End Session", textStyle: .cancel, handler: { [weak self] _ in
+                    self?.interfaceController?.popTemplate(animated: true) { _, _ in
+                        Task { @MainActor in self?.viewModel.endSession() }
+                    }
+                }),
+                CPTextButton(title: "Dismiss", textStyle: .normal, handler: { [weak self] _ in
+                    self?.interfaceController?.popTemplate(animated: true, completion: nil)
+                })
+            ]
+        )
+        interfaceController?.pushTemplate(template, animated: true, completion: nil)
+    }
+
+    /// Colored icon tile for a search result based on its POI category.
+    /// `nonisolated` so it can be called from the search completion closure.
+    private nonisolated func searchResultIcon(for mapItem: MKMapItem) -> UIImage? {
+        switch mapItem.pointOfInterestCategory {
+        case .gasStation: return CarPlayUI.iconTile(systemName: "fuelpump.fill", color: CarPlayUI.orange)
+        case .cafe:       return CarPlayUI.iconTile(systemName: "cup.and.saucer.fill", color: CarPlayUI.amber)
+        case .restaurant: return CarPlayUI.iconTile(systemName: "fork.knife", color: CarPlayUI.pink)
+        case .parking:    return CarPlayUI.iconTile(systemName: "p.circle.fill", color: CarPlayUI.blue)
+        case .hotel:      return CarPlayUI.iconTile(systemName: "bed.double.fill", color: CarPlayUI.purple)
+        case .hospital:   return CarPlayUI.iconTile(systemName: "cross.case.fill", color: CarPlayUI.alertRed)
+        case .store:      return CarPlayUI.iconTile(systemName: "bag.fill", color: CarPlayUI.teal)
+        case .evCharger:  return CarPlayUI.iconTile(systemName: "bolt.car.fill", color: CarPlayUI.neonGreen)
+        default:          return CarPlayUI.iconTile(systemName: "mappin.circle.fill", color: CarPlayUI.gray)
+        }
+    }
+
+    // MARK: - Ask To Siri (voice destination search)
+
+    /// Mic map button handler. Requests mic + speech permissions, then
+    /// starts the voice search flow. Denials surface a CarPlay alert
+    /// pointing at Settings instead of failing silently.
+    @MainActor
+    private func presentVoiceSearch() {
+        guard voiceSearchController == nil else { return } // already listening
+        guard interfaceController != nil else { return }
+
+        let micStatus = AVAudioApplication.shared.recordPermission
+        switch micStatus {
+        case .granted:
+            SFSpeechRecognizer.requestAuthorization { [weak self] status in
+                Task { @MainActor in
+                    guard let self else { return }
+                    if status == .authorized {
+                        self.beginVoiceSearch()
+                    } else {
+                        self.presentVoicePermissionAlert()
+                    }
+                }
+            }
+        case .undetermined:
+            AVAudioApplication.requestRecordPermission { [weak self] granted in
+                Task { @MainActor in
+                    guard let self else { return }
+                    guard granted else {
+                        self.presentVoicePermissionAlert()
+                        return
+                    }
+                    // Mic granted; speech authorization still needs its own
+                    // first-run prompt.
+                    SFSpeechRecognizer.requestAuthorization { status in
+                        Task { @MainActor in
+                            if status == .authorized {
+                                self.beginVoiceSearch()
+                            } else {
+                                self.presentVoicePermissionAlert()
+                            }
+                        }
+                    }
+                }
+            }
+        case .denied:
+            presentVoicePermissionAlert()
+        default:
+            presentVoicePermissionAlert()
         }
     }
 
     @MainActor
-    private func presentAlert(speed: Double, limit: Int) {
-        _ = Int(speed) - limit
-        let action = CPAlertAction(title: "Got It", style: .cancel) { [weak self] _ in
-            Task { @MainActor in self?.isAlertPresented = false }
-        }
+    private func beginVoiceSearch() {
+        guard let interfaceController else { return }
+        let controller = CarPlayVoiceSearchController()
+        voiceSearchController = controller
+        controller.start(interfaceController: interfaceController,
+                         root: self,
+                         viewModel: viewModel)
+    }
+
+    /// Presented when mic or speech permission is denied: the driver gets a
+    /// spoken-free, visible explanation and the keyboard search still works.
+    @MainActor
+    private func presentVoicePermissionAlert() {
+        let ok = CPAlertAction(title: "OK", style: .default) { _ in }
         let alert = CPAlertTemplate(
-            titleVariants: ["⚠ SPEED ALERT", "SPEED ALERT"],
-            actions: [action]
+            titleVariants: ["Voice search needs microphone access", "Enable it in Settings → Speedio, or use the search keyboard."],
+            actions: [ok]
         )
-        isAlertPresented = true
         interfaceController?.presentTemplate(alert, animated: true, completion: nil)
     }
-    
-    // MARK: - Search
+
+    /// Handoff from the voice flow: the transcript is searched through the
+    /// SAME submitted-results path the keyboard Search button uses, so the
+    /// driver always picks the destination (never auto-navigation).
     @MainActor
-    private func presentSearch() {
-        let searchTemplate = CPSearchTemplate()
-        searchTemplate.delegate = self
-        interfaceController?.pushTemplate(searchTemplate, animated: true, completion: nil)
-    }
-    
-    public func searchTemplate(_ searchTemplate: CPSearchTemplate, updatedSearchText searchText: String, completionHandler: @escaping ([CPListItem]) -> Void) {
-        Task { @MainActor in
-            self.navigationManager.searchDestination(query: searchText) { results in
-                let listItems = results.map { mapItem in
-                    let item = CPListItem(text: mapItem.name, detailText: mapItem.placemark.title)
-                    item.handler = { [weak self] _, completion in
-                        Task { @MainActor in
-                            self?.interfaceController?.popTemplate(animated: true, completion: nil)
-                            self?.navigationManager.startNavigation(to: mapItem)
-                        }
-                        completion()
+    func presentVoiceSearchResults(query: String) {
+        voiceSearchController = nil
+        searchGeneration &+= 1
+        let generation = searchGeneration
+        navigationManager.searchDestination(query: query) { [weak self] results in
+            guard let self else { return }
+            Task { @MainActor in
+                guard generation == self.searchGeneration else { return }
+                self.latestSearchResults = results
+                self.latestSearchResultsQuery = query
+                // Pop the listening alert FIRST, then show the results list
+                // on top of the map — the same surface the keyboard flow
+                // lands on. Chaining the push to the dismiss completion keeps
+                // CarPlay's template hierarchy transitions serialized.
+                self.interfaceController?.dismissTemplate(animated: false) { _, _ in
+                    Task { @MainActor in
+                        self.presentSubmittedSearchResults(query: query, results: results)
                     }
-                    return item
                 }
-                completionHandler(listItems)
             }
         }
     }
 
-    public func searchTemplate(_ searchTemplate: CPSearchTemplate, selectedResult item: CPListItem, completionHandler: @escaping () -> Void) {
-        // If the item.handler is set, it will be called automatically by CarPlay.
-        // We implement this to satisfy protocol requirements.
+    // MARK: - Search & Add Stop
+
+    @MainActor
+    private func presentSearch() {
+        // Search can be opened from both the map and the Add Stop grid. Do
+        // not queue another CPSearchTemplate while CarPlay is still pushing
+        // or dismissing the current one; duplicate pushes are a direct path
+        // to the framework's hierarchy-depth exception.
+        clearInactiveAddStopTemplates()
+        guard !isTemplatePushInFlight,
+              !isTemplateOnStack(activeSearchTemplate),
+              let interfaceController else { return }
+        let template = CPSearchTemplate()
+        template.delegate = self
+        activeSearchTemplate = template
+        isTemplatePushInFlight = true
+        interfaceController.pushTemplate(template, animated: true) { [weak self] _, _ in
+            Task { @MainActor in self?.isTemplatePushInFlight = false }
+        }
+    }
+
+    @MainActor
+    private func presentAddStopSearch() {
+        // The map button can deliver more than one callback while CarPlay is
+        // animating a push. Reuse the existing grid instead of stacking a
+        // second add-stop flow.
+        clearInactiveAddStopTemplates()
+        guard !isTemplatePushInFlight,
+              !isTemplateOnStack(activeAddStopTemplate) else { return }
+
+        // Grid of big, colorful quick actions — safe to scan while driving.
+        let gas = CPGridButton(titleVariants: ["Gas Station"],
+                               image: CarPlayUI.iconTile(systemName: "fuelpump.fill", color: CarPlayUI.orange, size: 56)) { [weak self] _ in
+            Task { @MainActor in self?.searchAndAddStop(query: "Gas Station") }
+        }
+        let coffee = CPGridButton(titleVariants: ["Coffee"],
+                                  image: CarPlayUI.iconTile(systemName: "cup.and.saucer.fill", color: CarPlayUI.amber, size: 56)) { [weak self] _ in
+            Task { @MainActor in self?.searchAndAddStop(query: "Coffee") }
+        }
+        let food = CPGridButton(titleVariants: ["Food"],
+                                image: CarPlayUI.iconTile(systemName: "fork.knife", color: CarPlayUI.pink, size: 56)) { [weak self] _ in
+            Task { @MainActor in self?.searchAndAddStop(query: "Restaurant") }
+        }
+        let parking = CPGridButton(titleVariants: ["Parking"],
+                                   image: CarPlayUI.iconTile(systemName: "p.circle.fill", color: CarPlayUI.blue, size: 56)) { [weak self] _ in
+            Task { @MainActor in self?.searchAndAddStop(query: "Parking") }
+        }
+        let search = CPGridButton(titleVariants: ["Search"],
+                                  image: CarPlayUI.iconTile(systemName: "magnifyingglass", color: CarPlayUI.cyan, size: 56)) { [weak self] _ in
+            Task { @MainActor in self?.presentSearch() }
+        }
+        var buttons = [gas, coffee, food, parking, search]
+        if !viewModel.routeStops.isEmpty {
+            let vs = CPGridButton(titleVariants: ["Stops (\(viewModel.routeStops.count))"],
+                                  image: CarPlayUI.iconTile(systemName: "list.bullet", color: CarPlayUI.purple, size: 56)) { [weak self] _ in
+                Task { @MainActor in self?.presentStopsList() }
+            }
+            buttons.insert(vs, at: 0)
+        }
+        pushAddStopTemplate(CPGridTemplate(title: "Add Stop", gridButtons: buttons))
+    }
+
+    @MainActor
+    private func searchAndAddStop(query: String) {
+        stopSearchGeneration &+= 1
+        let generation = stopSearchGeneration
+        navigationManager.searchDestination(query: query) { [weak self] results in
+            guard let self = self else { return }
+            Task { @MainActor in
+                // Ignore stale responses: if the driver tapped a different
+                // category or backed out of the + flow while this search was
+                // in flight, a newer request is authoritative.
+                guard generation == self.stopSearchGeneration,
+                      self.isTemplateOnStack(self.activeAddStopTemplate) else { return }
+                self.presentStopOptions(title: query, results: results)
+            }
+        }
+    }
+
+    /// Show a picker of nearby results so the driver chooses the exact place
+    /// (nearest first, with distance) instead of auto-adding the first hit.
+    /// Used by every category shortcut (+ button: gas, coffee, food, parking).
+    @MainActor
+    private func presentStopOptions(title: String, results: [MKMapItem]) {
+        guard !results.isEmpty else {
+            let noResults = CPListItem(text: "No Results", detailText: "Try a different category")
+            noResults.isEnabled = false
+            let template = CPListTemplate(title: title, sections: [
+                CPListSection(items: [noResults], header: nil, sectionIndexTitle: nil)
+            ])
+            pushStopOptionsTemplate(template)
+            return
+        }
+
+        // Nearest first so the closest option is always at the top.
+        let sorted = results.sorted {
+            (distanceFromUser(to: $0) ?? .infinity) < (distanceFromUser(to: $1) ?? .infinity)
+        }
+
+        let items: [CPListItem] = sorted.prefix(10).map { mapItem in
+            let name = mapItem.name ?? "Unknown"
+            let dist = distanceLabel(for: mapItem)
+            let address = mapItem.placemark.title ?? ""
+            let detail = [dist, address].filter { !$0.isEmpty }.joined(separator: " · ")
+            let item = CPListItem(text: name, detailText: detail)
+            if let icon = searchResultIcon(for: mapItem) { item.setImage(icon) }
+            item.handler = { [weak self] _, completion in
+                Task { @MainActor in
+                    guard let self = self else {
+                        completion()
+                        return
+                    }
+                    guard !self.isAddingStopInProgress else {
+                        completion()
+                        return
+                    }
+                    self.isAddingStopInProgress = true
+                    // CarPlay owns the add-stop flow. Do not present the
+                    // phone's RouteStopsSheet here: it covers the phone HUD
+                    // while CarPlay is searching and leaves the two surfaces
+                    // out of sync. The flow pops back to the map template
+                    // after the add. Keep CarPlay's selection completion
+                    // behind the async route mutation so the stack cannot race
+                    // the pop transition.
+                    // Complete the CarPlay row selection promptly; MapKit may
+                    // take an unbounded amount of time to calculate several
+                    // sequential legs, and holding this callback would leave
+                    // the list UI stuck. The single-flight latch serializes the
+                    // later pop transition.
+                    completion()
+                    let didAddStop = await self.viewModel.addStopToRoute(mapItem, presentRouteStopsSheet: false)
+                    if didAddStop {
+                        self.unwindAfterStopAdded()
+                    } else {
+                        // Only failures surface a modal; success speaks through
+                        // the recalculated route on the map (TestFlight 2.3.0
+                        // b653: "NEVER SHOW THIS SCREEN!!").
+                        self.showStopAddFailure()
+                    }
+                }
+            }
+            return item
+        }
+
+        let section = CPListSection(items: items, header: "\(results.count) found", sectionIndexTitle: nil)
+        let template = CPListTemplate(title: title, sections: [section])
+        pushStopOptionsTemplate(template)
+    }
+
+    /// Distance (meters) from the user's current location to a result.
+    private func distanceFromUser(to mapItem: MKMapItem) -> CLLocationDistance? {
+        guard let user = viewModel.locationManager.latestLocation,
+              let loc = mapItem.placemark.location else { return nil }
+        return user.distance(from: loc)
+    }
+
+    /// Short distance string honoring the user's unit preference
+    /// (e.g. "0.4 mi" / "1.2 km" / "800 ft" / "350 m").
+    private func distanceLabel(for mapItem: MKMapItem) -> String {
+        guard let meters = distanceFromUser(to: mapItem) else { return "" }
+        return SpeedFormatting.navigationDistanceLabel(
+            forMeters: meters,
+            measurementSystem: SpeedFormatting.measurementSystem()
+        )
+    }
+
+    /// Unwinds the add-stop flow back to the map after a successful add.
+    /// Deliberately shows no confirmation modal: the old stop-added
+    /// confirmation alert was noise with an unreliable OK button
+    /// (TestFlight 2.3.0 b653). The recalculated route drawn on the map is
+    /// the acknowledgment. The invalidation plus latch reset still guard
+    /// against a late category-search callback re-pushing a stale result
+    /// list after the pop.
+    @MainActor
+    private func unwindAfterStopAdded() {
+        invalidateAddStopSearch()
+        guard let interfaceController else {
+            isAddingStopInProgress = false
+            return
+        }
+        interfaceController.popToRootTemplate(animated: false) { [weak self] success, _ in
+            guard let self else { return }
+            self.isAddingStopInProgress = false
+            guard success else { return }
+            self.activeAddStopTemplate = nil
+            self.activeStopOptionsTemplate = nil
+            self.activeStopsListTemplate = nil
+        }
+    }
+
+    /// Reports a failed route recalculation without claiming that the stop
+    /// was accepted. The ViewModel restores the previous coherent route.
+    @MainActor
+    private func showStopAddFailure() {
+        invalidateAddStopSearch()
+        guard let interfaceController else {
+            isAddingStopInProgress = false
+            return
+        }
+        interfaceController.popToRootTemplate(animated: false) { [weak self] success, _ in
+            guard let self else { return }
+            self.isAddingStopInProgress = false
+            guard success else { return }
+            self.activeAddStopTemplate = nil
+            self.activeStopOptionsTemplate = nil
+            self.activeStopsListTemplate = nil
+            let action = CPAlertAction(title: "OK", style: .default) { _ in }
+            let alert = CPAlertTemplate(
+                titleVariants: ["Stop not added", "Route recalculation failed. Try again when connected."],
+                actions: [action]
+            )
+            self.interfaceController?.presentTemplate(alert, animated: true, completion: nil)
+        }
+    }
+
+    @MainActor
+    private func presentStopsList() {
+        clearInactiveAddStopTemplates()
+        guard !isTemplateOnStack(activeStopsListTemplate),
+              !isRemovingStopInProgress else { return }
+
+        let items: [CPListItem] = viewModel.routeStops.enumerated().map { i, stop in
+            let item = CPListItem(text: "\(i+1). \(stop.name)", detailText: stop.address ?? "")
+            let sid = stop.id
+            item.handler = { [weak self] _, c in
+                guard let self else {
+                    c()
+                    return
+                }
+                guard !self.isRemovingStopInProgress else {
+                    c()
+                    return
+                }
+                self.isRemovingStopInProgress = true
+                // Complete the row selection once, then serialize the route
+                // mutation and stack reset. Previously a second tap could
+                // start another async removal while the first pop was still
+                // in flight, leaving CarPlay with an inconsistent hierarchy.
+                c()
+                Task { @MainActor in
+                    await self.viewModel.removeStopFromRoute(sid)
+                    self.invalidateAddStopSearch()
+                    guard let interfaceController = self.interfaceController else {
+                        self.activeAddStopTemplate = nil
+                        self.activeStopOptionsTemplate = nil
+                        self.activeStopsListTemplate = nil
+                        self.isRemovingStopInProgress = false
+                        return
+                    }
+                    interfaceController.popToRootTemplate(animated: true) { [weak self] success, _ in
+                        guard let self else { return }
+                        if success {
+                            self.activeAddStopTemplate = nil
+                            self.activeStopOptionsTemplate = nil
+                            self.activeStopsListTemplate = nil
+                        }
+                        // Always release the latch, including a failed or
+                        // interrupted CarPlay transition, so one bad pop
+                        // cannot permanently disable the Stops flow.
+                        self.isRemovingStopInProgress = false
+                    }
+                }
+            }
+            return item
+        }
+        let t = CPListTemplate(title: "Route Stops (\(viewModel.routeStops.count))", sections: [CPListSection(items: items, header: nil, sectionIndexTitle: nil)])
+        t.emptyViewTitleVariants = ["No Stops"]
+        t.emptyViewSubtitleVariants = ["Add stops along your route"]
+        pushStopsListTemplate(t)
+    }
+
+    // MARK: - CPSearchTemplateDelegate
+
+    func searchTemplate(_ searchTemplate: CPSearchTemplate, updatedSearchText searchText: String, completionHandler: @escaping ([CPListItem]) -> Void) {
+        // Blank query (e.g. when the template is dismissed or the field is
+        // cleared): immediately hand back an empty list instead of firing a
+        // meaningless 50-km MKLocalSearch for "". This also clears the
+        // result caches: keeping them would let a later tap on a stale row
+        // resolve through `latestSearchResults` to a destination from a
+        // PREVIOUS search session and present the wrong trip preview.
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            searchGeneration &+= 1
+            latestSearchQuery = ""
+            latestSearchResultsQuery = ""
+            searchItemMap.removeAll()
+            latestSearchResults.removeAll()
+            completionHandler([])
+            return
+        }
+        latestSearchQuery = trimmed
+        searchGeneration &+= 1
+        let generation = searchGeneration
+        navigationManager.searchDestination(query: trimmed) { [weak self] results in
+            guard let self = self else { return }
+            Task { @MainActor in
+                // Drop stale responses so a slow earlier query can't overwrite
+                // fresher results (or let the driver tap a wrong, stale row).
+                guard generation == self.searchGeneration else { return }
+                self.searchItemMap.removeAll()
+                self.latestSearchResults = results
+                self.latestSearchResultsQuery = trimmed
+                let items = results.map { mi in
+                    let item = CPListItem(text: mi.name, detailText: mi.placemark.title)
+                    self.searchItemMap[ObjectIdentifier(item)] = mi
+                    if let icon = self.searchResultIcon(for: mi) { item.setImage(icon) }
+                    // CPSearchTemplate delivers selection through its
+                    // `selectedResult` delegate callback. Do not attach a
+                    // second CPListItem handler here: on some CarPlay/iOS
+                    // versions that creates a grey selected row while the
+                    // search template remains on screen and the route preview
+                    // is left underneath it.
+                    return item
+                }
+                completionHandler(items)
+            }
+        }
+    }
+
+    /// The blue Search key is a separate CarPlay delegate event from text
+    /// changes. Without this callback CarPlay keeps the CPSearchTemplate and
+    /// its keyboard on screen, which is exactly the state shown in the
+    /// TestFlight screenshot. Push a regular list template so CarPlay closes
+    /// the keyboard and gives the driver the full result list to scroll.
+    func searchTemplateSearchButtonPressed(_ searchTemplate: CPSearchTemplate) {
+        let query = latestSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty,
+              !isTemplatePushInFlight,
+              !isTemplateOnStack(activeSubmittedSearchResultsTemplate) else { return }
+
+        // Keystroke search normally has already delivered these results. If
+        // the driver presses Search before that response arrives, issue one
+        // authoritative request rather than showing an older query's places.
+        if latestSearchResultsQuery == query {
+            presentSubmittedSearchResults(query: query, results: latestSearchResults)
+            return
+        }
+
+        searchGeneration &+= 1
+        let generation = searchGeneration
+        navigationManager.searchDestination(query: query) { [weak self] results in
+            guard let self else { return }
+            Task { @MainActor in
+                guard generation == self.searchGeneration else { return }
+                self.latestSearchResults = results
+                self.latestSearchResultsQuery = query
+                self.presentSubmittedSearchResults(query: query, results: results)
+            }
+        }
+    }
+
+    /// Builds the scrollable destination list requested by the keyboard Search
+    /// action. Selecting a row returns to the map before showing the route
+    /// preview, keeping the template stack shallow and deterministic.
+    @MainActor
+    private func presentSubmittedSearchResults(query: String, results: [MKMapItem]) {
+        guard !isTemplatePushInFlight,
+              !isTemplateOnStack(activeSubmittedSearchResultsTemplate),
+              let interfaceController else { return }
+
+        let displayResults = Array(results.prefix(10))
+        let listItems: [CPListItem]
+        if displayResults.isEmpty {
+            let item = CPListItem(text: "No Results", detailText: "Try a different search")
+            item.isEnabled = false
+            listItems = [item]
+        } else {
+            listItems = displayResults.map { mapItem in
+                let item = CPListItem(
+                    text: mapItem.name ?? "Unknown destination",
+                    detailText: mapItem.placemark.title
+                )
+                if let icon = searchResultIcon(for: mapItem) { item.setImage(icon) }
+                item.handler = { [weak self] _, completion in
+                    completion()
+                    guard let self else { return }
+                    self.interfaceController?.popToRootTemplate(animated: true) { [weak self] success, _ in
+                        guard let self, success else { return }
+                        self.activeSubmittedSearchResultsTemplate = nil
+                        self.activeSearchTemplate = nil
+                        self.presentTripPreviewOnce(for: mapItem)
+                    }
+                }
+                return item
+            }
+        }
+
+        let header = displayResults.isEmpty
+            ? "SEARCH RESULTS"
+            : "\(displayResults.count) destinations"
+        let template = CPListTemplate(
+            title: query,
+            sections: [CPListSection(items: listItems, header: header, sectionIndexTitle: nil)]
+        )
+        activeSubmittedSearchResultsTemplate = template
+        activeSearchTemplate = nil
+        isTemplatePushInFlight = true
+        interfaceController.pushTemplate(template, animated: true) { [weak self] _, _ in
+            Task { @MainActor in self?.isTemplatePushInFlight = false }
+        }
+    }
+
+    func searchTemplate(_ searchTemplate: CPSearchTemplate, selectedResult item: CPListItem, completionHandler: @escaping () -> Void) {
+        // CarPlay calls this delegate when the driver taps a search result.
+        // The completion handler only finishes delegate processing; it does
+        // not reliably remove the CPSearchTemplate on every iOS/CarPlay
+        // version. Explicitly pop the template before showing directions so
+        // the selected row cannot remain grey with the keyboard/search panel
+        // covering the trip preview.
+        let mapItem: MKMapItem? = {
+            let id = ObjectIdentifier(item)
+            if let direct = searchItemMap[id] { return direct }
+            // Identity fallback: match by visible text. The system can
+            // invalidate the map between keystrokes and the tap, so never
+            // rely on identity alone — otherwise taps silently do nothing.
+            let text = item.text
+            return latestSearchResults.first { $0.name == text }
+        }()
         completionHandler()
+        guard let mapItem else { return }
+        presentTripPreviewAfterSearchDismissal(for: mapItem)
+    }
+
+    /// Dismisses the live CPSearchTemplate and only then presents the route
+    /// preview. The latch covers both the framework callback and any late
+    /// duplicate callback from the selected row.
+    @MainActor
+    private func presentTripPreviewAfterSearchDismissal(for destination: MKMapItem) {
+        guard !isSelectingSearchResult else { return }
+        isSelectingSearchResult = true
+        searchItemMap.removeAll()
+        latestSearchResults.removeAll()
+        latestSearchResultsQuery = ""
+
+        let finish: @MainActor () -> Void = { [weak self] in
+            guard let self else { return }
+            self.activeSearchTemplate = nil
+            self.isSelectingSearchResult = false
+            self.presentTripPreviewOnce(for: destination)
+        }
+
+        guard let interfaceController,
+              let searchTemplate = activeSearchTemplate,
+              isTemplateOnStack(searchTemplate) else {
+            finish()
+            return
+        }
+
+        interfaceController.popTemplate(animated: true) { [weak self] success, _ in
+            Task { @MainActor in
+                guard let self else { return }
+                if success {
+                    finish()
+                } else {
+                    // If CarPlay rejected the animated pop, do not strand the
+                    // destination behind the search surface. Try a direct
+                    // non-animated pop once, then still release the latch.
+                    self.interfaceController?.popTemplate(animated: false) { _, _ in
+                        Task { @MainActor in finish() }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Presents the trip preview at most once per search selection. CarPlay
+    /// can deliver BOTH the row handler and the `selectedResult` delegate for
+    /// a single tap; without this latch the preview would be presented twice
+    /// (harmless — `showTripPreviews` replaces — but wasteful and racy). The
+    /// latch is held for the FULL duration of the async route calculation +
+    /// presentation, so a second tap while the first preview is still being
+    /// computed is ignored rather than racing it.
+    @MainActor
+    private func presentTripPreviewOnce(for destination: MKMapItem) {
+        guard !isPresentingTripPreview else { return }
+        isPresentingTripPreview = true
+        presentTripPreview(for: destination) { [weak self] in
+            Task { @MainActor in
+                self?.isPresentingTripPreview = false
+            }
+        }
+    }
+
+    // MARK: - Trip Preview
+
+    @MainActor func showTurnByTurnList() { navigationManager.showManeuversList(interfaceController: interfaceController) }
+
+    /// Calculates routes and shows the trip preview. `completion` is invoked
+    /// once the preview has been handed to CPMapTemplate (or route
+    /// calculation failed), releasing the single-flight latch.
+    @MainActor
+    private func presentTripPreview(for destination: MKMapItem, completion: (@MainActor () -> Void)? = nil) {
+        navigationManager.calculateRoutes(to: destination) { [weak self] routes in
+            Task { @MainActor in
+                defer { completion?() }
+                guard let self = self else { return }
+                let choices: [CPRouteChoice]
+                if routes.isEmpty {
+                    choices = [CPRouteChoice(summaryVariants: [destination.name ?? "Destination"],
+                                             additionalInformationVariants: [destination.placemark.title ?? ""],
+                                             selectionSummaryVariants: ["Start Navigation"])]
+                } else {
+                    let system = SpeedFormatting.measurementSystem()
+                    choices = routes.enumerated().map { index, route in
+                        let eta = max(1, Int(ceil(route.expectedTravelTime / 60.0)))
+                        let etaStr = route.expectedTravelTime >= 3600
+                            ? String(format: "%d h %02d min", eta / 60, eta % 60)
+                            : String(format: "%d min", eta)
+                        let distanceMeasurement = SpeedFormatting.navigationDistanceMeasurement(
+                            forMeters: route.distance,
+                            measurementSystem: system
+                        )
+                        let distanceValue = distanceMeasurement.value
+                        let distanceUnit = SpeedFormatting.navigationDistanceUnit(
+                            forMeters: route.distance,
+                            measurementSystem: system
+                        )
+                        let distStr = distanceUnit == "ft" || distanceUnit == "m"
+                            ? "\(Int(distanceValue.rounded())) \(distanceUnit)"
+                            : String(format: "%.1f %@", distanceValue, distanceUnit)
+                        let title = index == 0 ? "Fastest Route" : "Route \(index + 1)"
+                        return CPRouteChoice(
+                            summaryVariants: [title],
+                            additionalInformationVariants: ["\(etaStr) · \(distStr)"],
+                            selectionSummaryVariants: [title]
+                        )
+                    }
+                }
+                let trip = CPTrip(origin: MKMapItem.forCurrentLocation(), destination: destination, routeChoices: choices)
+                let pt = CPTripPreviewTextConfiguration(
+                    startButtonTitle: "Start",
+                    additionalRoutesButtonTitle: routes.count > 1 ? "Routes" : nil,
+                    overviewButtonTitle: "Overview"
+                )
+                self.mapTemplate.showTripPreviews([trip], textConfiguration: pt)
+            }
+        }
+    }
+
+    // MARK: - Driver Map Panning (CPMapTemplate panning interface)
+    //
+    // The MKMapView under the CPWindow is owned by CarPlayMapController;
+    // the scene delegate hands it to us after setup so the pan/zoom
+    // delegate callbacks can drive it. Nil on the legacy no-window connect
+    // path — every callback tolerates that via optional chaining.
+    weak var mapController: CarPlayMapController?
+
+    /// Apple's guidance: allow the panning interface only while moving, so
+    /// a parked car isn't burdened with panning chrome. Mid-navigation the
+    /// interface stays available — scouting ahead of the route is exactly
+    /// when a driver needs it.
+    nonisolated func mapTemplateShouldShowPanningInterface(_ mapTemplate: CPMapTemplate) -> Bool {
+        MainActor.assumeIsolated { !viewModel.isRecording }
+    }
+
+    nonisolated func mapTemplateDidShowPanningInterface(_ mapTemplate: CPMapTemplate) {
+        Task { @MainActor in
+            // Freeze ALL automatic camera work while the driver pans.
+            self.mapController?.setPanningInterfaceActive(true)
+        }
+    }
+
+    nonisolated func mapTemplateDidDismissPanningInterface(_ mapTemplate: CPMapTemplate) {
+        Task { @MainActor in
+            // "Done" doubles as recenter: user tracking flips back on and
+            // the navigation camera animator resumes from the current view.
+            self.mapController?.setPanningInterfaceActive(false)
+        }
+    }
+
+    /// Live drag from the panning gesture.
+    nonisolated func mapTemplate(_ mapTemplate: CPMapTemplate, didUpdatePanGestureWithTranslation translation: CGPoint, velocity: CGPoint) {
+        Task { @MainActor in
+            self.mapController?.pan(by: translation)
+        }
+    }
+
+    nonisolated func mapTemplate(_ mapTemplate: CPMapTemplate, panWith direction: CPMapTemplate.PanDirection) {
+        Task { @MainActor in
+            // The panning chrome's directional arrows.
+            self.mapController?.pan(in: direction)
+        }
+    }
+
+    /// Two-finger pinch zoom (newer head units / trackpad-style input).
+    /// Scale > 1 means the content spreads apart = zoom in = smaller
+    /// camera distance.
+    nonisolated func mapTemplate(_ mapTemplate: CPMapTemplate, didUpdateZoomGestureWithCenter center: CGPoint, scale: CGFloat, velocity: CGFloat) {
+        Task { @MainActor in
+            self.mapController?.zoom(by: 1.0 / Double(max(scale, 0.01)))
+        }
+    }
+
+    nonisolated func mapTemplateDidBeginZoomGesture(_ mapTemplate: CPMapTemplate) {
+        Task { @MainActor in
+            self.mapController?.zoomGestureBegan()
+        }
+    }
+
+    nonisolated func mapTemplateDidBeginPanGesture(_ mapTemplate: CPMapTemplate) {
+        // Gesture bookkeeping is owned by the MKMapView itself; the
+        // cumulative-translation callback above does the real work.
+    }
+
+    // MARK: - CPMapTemplateDelegate
+
+    nonisolated func mapTemplate(_ mapTemplate: CPMapTemplate, startedTrip trip: CPTrip, using routeChoice: CPRouteChoice) {
+        // CPTrip is not Sendable, so even inside `MainActor.assumeIsolated`
+        // the @Sendable task closure cannot capture the parameter directly —
+        // the compiler can't prove the caller region won't touch it again.
+        // CarPlay hands us the trip on the main thread and the task hops
+        // straight back to the main actor, so boxing it in an
+        // unchecked-Sendable wrapper is race-free (same pattern as
+        // FinalTranscriptBox / AudioLevelGate).
+        struct TripBox: @unchecked Sendable { let trip: CPTrip }
+        let tripBox = TripBox(trip: trip)
+        MainActor.assumeIsolated {
+            Task { @MainActor in
+                guard !isHandlingCarPlayTrip else { return }
+            isHandlingCarPlayTrip = true; defer { isHandlingCarPlayTrip = false }
+            // CarPlay normally dismisses previews automatically for this
+            // callback. Explicitly hide them as well: on some iOS 26 head
+            // units the preview/prompt remains visible until the app hands
+            // control back after its async route calculation.
+            mapTemplate.hideTripPreviews()
+            if viewModel.isNavigating { await viewModel.navigationCoordinator.endNavigation() }
+            await navigationManager.handleCarPlayStartedTrip(tripBox.trip)
+            // The coordinator publishes the route during the async handoff.
+            // Record that exact route so the synchronization publisher does
+            // not install a second CarPlay session when this callback returns.
+            if let route = viewModel.navigationCoordinator.currentRoute,
+               let destination = viewModel.navigationCoordinator.destination {
+                lastPhoneNavigationHandoffKey = navigationHandoffKey(route: route, destination: destination)
+            }
+            }
+        }
+    }
+    nonisolated func mapTemplateDidStopNavigating(_ mapTemplate: CPMapTemplate) {
+        Task { @MainActor in
+            // Guard: if CarPlay is disconnecting, do NOT end phone-side
+            // navigation. tearDownNavigation() already finishes the
+            // CarPlay session cleanly; this callback should only fire
+            // when the user explicitly stops navigation while connected.
+            guard self.interfaceController != nil else { return }
+            // The framework may stop the placeholder session on its own
+            // (trip previews, head-unit recycles). Its stop callback carries
+            // no session identity, so drop any stale placeholder bindings
+            // before deciding what this stop means.
+            self.navigationManager.releaseIdleSessionIfPresent()
+            // An echo of a just-finished placeholder session is not a driver
+            // stop (see CarPlayNavigationManager.endIdleSession).
+            guard !self.navigationManager.isIdleStopEchoGuardActive() else { return }
+            if self.viewModel.isNavigating {
+                await self.viewModel.navigationCoordinator.endNavigation()
+            } else {
+                // No navigation and the session stopped anyway: the framework
+                // recycled or invalidated the placeholder on its own. Rebuild
+                // the speed banner so the head unit's driving surface
+                // survives. `beginSessionWithoutNavigation` re-guards, so a
+                // duplicate callback cannot double-start a session. Skip
+                // while a CarPlay-started trip is mid-handoff — its real
+                // session is about to replace the placeholder, and a stray
+                // placeholder stop echo must not churn a wasted rebuild.
+                guard !self.isHandlingCarPlayTrip else { return }
+                self.navigationManager.beginSessionWithoutNavigation()
+            }
+        }
+    }
+
+    /// The driver dismissed a trip preview (or CarPlay cancelled navigation
+    /// setup). Show the "session without navigation" speed banner again so a
+    /// cancelled destination search never strands the head unit on a bare
+    /// map. During active navigation the guard below makes this a no-op —
+    /// real teardown continues to flow through mapTemplateDidStopNavigating.
+    nonisolated func mapTemplateDidCancelNavigation(_ mapTemplate: CPMapTemplate) {
+        Task { @MainActor in
+            guard self.interfaceController != nil else { return }
+            self.navigationManager.releaseIdleSessionIfPresent()
+            guard !self.navigationManager.isIdleStopEchoGuardActive(),
+                  !self.viewModel.isNavigating else { return }
+            self.navigationManager.beginSessionWithoutNavigation()
+        }
     }
 }
 
+// MARK: - Pan Delegate (extension workaround)
 
+/// The pan begin/end optional requirements of `CPMapTemplateDelegate`
+/// near-match any `(CPMapTemplate, CGPoint) -> Void` member declared in this
+/// @MainActor class body, because the requirement's nonisolated signature can
+/// never match an implicitly MainActor-isolated method. Declaring the methods
+/// in an extension silences the 'nearly matches' warning; the selectors
+/// CarPlay dispatches are unchanged.
+extension CarPlayNavigationRootTemplate {
+
+    /// Single-finger pan begin on head units that deliver begin/update/end
+    /// instead of cumulative translation updates.
+    nonisolated func mapTemplate(_ mapTemplate: CPMapTemplate, panBeganWith location: CGPoint) {
+        Task { @MainActor in
+            self.mapController?.panGestureBegan(at: location)
+        }
+    }
+
+    /// End of a single-finger pan.
+    nonisolated func mapTemplate(_ mapTemplate: CPMapTemplate, panEndedWith location: CGPoint) {
+        Task { @MainActor in
+            self.mapController?.panGestureEnded()
+        }
+    }
+}

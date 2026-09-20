@@ -1,604 +1,1435 @@
-// MapWithHUDView.swift
-// Smart Speed Companion — Map Tab
-//
-// This is the primary driving screen. It combines a full-screen MKMapView
-// (same engine as Apple Maps) with a floating speed HUD pill at the bottom
-// and a search bar at the top. Written by hand — do not modify this file.
-
 import SwiftUI
 import MapKit
-import Combine
+import UIKit
 
-// MARK: - Main Container View
+/// Reports the bottom edge (global-space points) of MapWithHUDView's top
+/// chrome — the whole Group above the middle Spacer (offline banner,
+/// navigation card, Add Stops pill, nearby-amenities card, search bar…).
+/// Consumed by `LiveMapView.updateUIView` to drop the native compass +
+/// tracking buttons just below that chrome. Replaces the hardcoded
+/// 155 + 35 + 40 estimate that kept going stale every time the card stack
+/// gained or lost a row (TestFlight 2.3.0 b640, then again b653:
+/// chslmadhuri@gmail.com — "Move the directions panel thing more up, so that
+/// these circles buttons are not covered.").
+struct TopChromeBottomKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
 
-struct MapWithHUDView: View {
-    @EnvironmentObject var vm: DriveViewModel
+public struct MapWithHUDView: View {
+    @EnvironmentObject var driveViewModel: DriveViewModel
+    @Environment(\.horizontalSizeClass) var hSizeClass
+    @Environment(\.verticalSizeClass) var vSizeClass
+    // Observed so the offline banner re-renders in real time when
+    // NWPathMonitor fires a path-update on the device. Per
+    // TestFlight 2.1.4 feedback from
+    // srihan.yeleswarapu@gmail.com: "if the user has no wifi, show an
+    // alert saying please turn on WiFi or cellular data".
+    @ObservedObject private var network = NetworkReachability.shared
 
-    var body: some View {
+    public init() {}
+
+    private var isLandscape: Bool {
+        // Simple heuristic: if vertical is compact, it's usually landscape on iPhone.
+        return vSizeClass == .compact
+    }
+
+    public var body: some View {
         GeometryReader { geo in
-            ZStack(alignment: .top) {
-
-                // ── 1. Full-screen map (bleeds under status bar + home indicator)
-                MapView()
-                    .environmentObject(vm)
+            ZStack {
+                // Background map spanning entire screen
+                LiveMapView()
                     .ignoresSafeArea(.all)
 
-                // ── 2. Search bar pinned to top, inside safe area
+                // Overlay content
                 VStack(spacing: 0) {
-                    SearchBarWithResults()
-                        .environmentObject(vm)
-                        .padding(.horizontal, 12)
+                    // Top section — -20 offset lifts the search bar + 3D
+                    // toggle up by 10 px more from the previous -10 position.
+                    // TestFlight 2.2.0 (b397) follow-up from
+                    // srihan.yeleswarapu@gmail.com: nearly there, just needed
+                    // another 10 px up. The group offset is purely visual so
+                    // the Spacer below still expands to fill the middle.
+                    Group {
+                        // Offline banner (TestFlight 2.1.4 feedback:
+                    // "if the user has no wifi, show an alert saying
+                    // please turn on WiFi or cellular data"). Visible only
+                    // when NWPathMonitor reports !satisfied. Pinned to the
+                    // very top of the VStack so it doesn't get occluded
+                    // by navigation cards. Animates in/out so it doesn't
+                    // punch in awkwardly when connectivity flaps.
+                    if !network.isConnected {
+                        OfflineDataBanner()
+                            .padding(.top, geo.safeAreaInsets.top + 4)
+                            .padding(.horizontal, 12)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                    if (driveViewModel.isNavigating || driveViewModel.isSelectingRoute) && !driveViewModel.isSearchingLocally {
+                        if driveViewModel.isNavigating {
+                            NavigationInstructionCard()
+                                .padding(.top, geo.safeAreaInsets.top + 8)
+                                .padding(.horizontal, 16)
+                                .transition(.move(edge: .top).combined(with: .opacity))
+                        } else if driveViewModel.isSelectingRoute {
+                            RouteSelectionCard()
+                                .padding(.top, geo.safeAreaInsets.top + 12)
+                                .padding(.horizontal, 16)
+                                .transition(.move(edge: .bottom).combined(with: .opacity))
+                        }
+
+                        // "Add Stops" shortcut pill shown right
+                        // under the navigation instruction card while we are
+                        // actively navigating to a destination.
+                        if driveViewModel.isNavigating, let dest = driveViewModel.destination {
+                            NavigationShortcutsRow(destination: dest)
+                                .padding(.top, 8)
+                                .padding(.horizontal, 16)
+                        }
+                    } else {
+                        // Top row (TestFlight 2.2.x chrome redesign).
+                        //   • SearchBarView — thinner (inner HStack frame is
+                        //     40pt, down from 56pt; magnifier is 16pt;
+                        //     TextField is 15pt; inner padding is 14pt).
+                        //   • MapPitchToggleButton — SwiftUI 2D/3D pill.
+                        //     TestFlight FB28: user wants the 3D pill AND
+                        //     the native compass/tracking buttons to
+                        //     COLLAPSE while the search bar is focused so
+                        //     the search row has full width and the map
+                        //     has more room. Hiding the pill here makes
+                        //     the search row visually read as one
+                        //     [expanded search bar] until the user taps
+                        //     away, at which point we restore the 3D pill.
+                        //     The companion's MKCompassButton +
+                        //     MKUserTrackingButton are hidden in
+                        //     `LiveMapView.updateUIView` against the same
+                        //     flag.
+                        HStack(spacing: 8) {
+                            SearchBarView(isLandscape: isLandscape)
+                            if !driveViewModel.isSearchingLocally {
+                                MapPitchToggleButton(isLandscape: isLandscape)
+                                    .transition(.scale.combined(with: .opacity))
+                            }
+                        }
+                        .animation(.easeInOut(duration: 0.2), value: driveViewModel.isSearchingLocally)
                         .padding(.top, geo.safeAreaInsets.top + 8)
+                        .padding(.horizontal, 12)
+                    }
+
+                    // Overspeed acknowledgement card is available on mobile
+                    // as well as CarPlay. It calls the same AlertEngine silence
+                    // path, so tapping I Know stops the active tone immediately.
+                    if driveViewModel.status == .over {
+                        MobileSpeedAlertBanner()
+                            .padding(.horizontal, 16)
+                            .padding(.top, 8)
+                    }
+
+                    // Nearby amenities sheet: results of an MKLocalSearch
+                    // category query (gas/food/coffee/parking). Empty by default.
+                    if !driveViewModel.nearbyAmenities.isEmpty {
+                        NearbyAmenitiesCard()
+                            .padding(.top, 8)
+                            .padding(.horizontal, 16)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                    } // Group — top section
+                    .offset(y: -35)
+                    // Measure the REAL bottom edge of the top chrome and
+                    // publish it for LiveMapView's compass/tracking-button
+                    // drop constraint. Offsets are purely visual and never
+                    // affect layout, so the measured frame IS the frame the
+                    // user sees; the -35 mirrors the visual offset above
+                    // (which layout does not know about). While guiding, add
+                    // 14 pt of breathing room so the compass lands clear of
+                    // the card's bottom glass corner instead of touching it.
+                    .background(
+                        GeometryReader { chromeGeo in
+                            Color.clear.preference(
+                                key: TopChromeBottomKey.self,
+                                value: max(chromeGeo.frame(in: .global).maxY - 35
+                                    + (driveViewModel.isNavigating || driveViewModel.isSelectingRoute ? 14 : 0),
+                                    0)
+                            )
+                        }
+                    )
+                    .onPreferenceChange(TopChromeBottomKey.self) { bottom in
+                        if driveViewModel.topChromeBottom != bottom {
+                            driveViewModel.topChromeBottom = bottom
+                        }
+                    }
+
                     Spacer()
-                }
 
-                // ── 3. HUD pill pinned to bottom, above tab bar
-                VStack {
-                    Spacer()
-                    SpeedHUDPill()
-                        .environmentObject(vm)
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, geo.safeAreaInsets.bottom + 72) // 72 = tab bar height
-                }
-                
-                if vm.showVerifyPrompt {
-                    VerifyLimitSheet(vm: vm)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                        .zIndex(10)
-                }
-            }
-            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: vm.showVerifyPrompt)
-        }
-        .background(Color(hex: "#040510"))
-    }
-}
+                    // Bottom section — +45 offset nudges the speed readout /
+                    // START button / limit sign down by 10 px more from the
+                    // previous +35 position, per TestFlight 2.2.0 (b397)
+                    // follow-up from srihan.yeleswarapu@gmail.com: just
+                    // needed another 10 px down. The offset is purely
+                    // visual so the Spacer above still expands to fill the
+                    // middle.
+                    Group {
+                        // Re-center button — always visible when map is detached
+                        if driveViewModel.isMapDetached {
+                            HStack {
+                                Button(action: {
+                                    UISelectionFeedbackGenerator().selectionChanged()
+                                    driveViewModel.isMapDetached = false
+                                }) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "location.fill")
+                                            .font(.system(size: 16, weight: .bold))
+                                        Text("Re-center")
+                                            .font(.system(size: 13, weight: .bold))
+                                    }
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 10)                            .liquidGlassChip(cornerRadius: 20, tint: DesignSystem.cyan.opacity(0.06), interactive: true)
+                            .shadow(color: DesignSystem.cyan.opacity(0.25), radius: 8)
+                                }
+                                .padding(.leading, 16)
+                                .padding(.bottom, 8)
+                                .transition(.scale.combined(with: .opacity))
 
-// MARK: - MKMapView Wrapper
+                                Spacer()
+                            }
+                        }
 
-struct MapView: UIViewRepresentable {
-    @EnvironmentObject var vm: DriveViewModel
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(vm: vm)
-    }
-
-    func makeUIView(context: Context) -> MKMapView {
-        let map = MKMapView()
-        map.delegate = context.coordinator
-        context.coordinator.mapView = map
-
-        // Appearance
-        map.overrideUserInterfaceStyle = .dark
-        map.mapType = .standard
-        map.showsUserLocation = true
-        map.showsCompass = true
-        map.showsScale = true
-        map.isRotateEnabled = true
-        map.isPitchEnabled = false  // keep 2D — less disorienting while driving
-
-        // Track user by default
-        map.setUserTrackingMode(.followWithHeading, animated: false)
-
-        // Compass button repositioned below search bar
-        map.showsCompass = false // we add a custom one to avoid overlap
-        let compass = MKCompassButton(mapView: map)
-        compass.compassVisibility = .adaptive
-        compass.translatesAutoresizingMaskIntoConstraints = false
-        map.addSubview(compass)
-        NSLayoutConstraint.activate([
-            compass.topAnchor.constraint(equalTo: map.topAnchor, constant: 120),
-            compass.trailingAnchor.constraint(equalTo: map.trailingAnchor, constant: -12)
-        ])
-
-        return map
-    }
-
-    func updateUIView(_ map: MKMapView, context: Context) {
-        context.coordinator.updateRoute(on: map)
-        
-        // Removed context.coordinator.updateTracking(on: map)
-        // Calling this every second (when speed updates) interrupts user gestures.
-        // Tracking mode is now managed by initialization and delegate callbacks.
-    }
-
-    // MARK: Coordinator
-    final class Coordinator: NSObject, MKMapViewDelegate {
-        let vm: DriveViewModel
-        weak var mapView: MKMapView?
-        private var cancellables = Set<AnyCancellable>()
-        private var currentPolyline: MKPolyline?
-        private var destinationAnnotation: MKPointAnnotation?
-
-        // Prevent zoom fighting — only re-center when user hasn't touched the map
-        var userInteracting = false
-
-        init(vm: DriveViewModel) {
-            self.vm = vm
-            super.init()
-
-            // Listen for route changes
-            vm.$currentRoute
-                .receive(on: RunLoop.main)
-                .sink { [weak self] _ in
-                    guard let map = self?.mapView else { return }
-                    self?.updateRoute(on: map)
-                }
-                .store(in: &cancellables)
-
-            // Listen for navigation end
-            vm.$isNavigating
-                .receive(on: RunLoop.main)
-                .sink { [weak self] navigating in
-                    if !navigating {
-                        self?.clearNavigation()
-                    }
-                }
-                .store(in: &cancellables)
-        }
-
-        func updateRoute(on map: MKMapView) {
-            // Clear old route
-            if let old = currentPolyline {
-                map.removeOverlay(old)
-                currentPolyline = nil
-            }
-            if let old = destinationAnnotation {
-                map.removeAnnotation(old)
-                destinationAnnotation = nil
-            }
-
-            guard let route = vm.currentRoute else { return }
-
-            // Draw new route polyline
-            let polyline = route.polyline
-            currentPolyline = polyline
-            map.addOverlay(polyline, level: .aboveRoads)
-
-            // Destination pin
-            if let dest = vm.destination {
-                let ann = MKPointAnnotation()
-                ann.coordinate = dest.placemark.coordinate
-                ann.title = dest.name
-                destinationAnnotation = ann
-                map.addAnnotation(ann)
-            }
-
-            // Fit route in view with padding (only when navigation just started)
-            let padding = UIEdgeInsets(top: 120, left: 40, bottom: 220, right: 40)
-            map.setVisibleMapRect(route.polyline.boundingMapRect,
-                                  edgePadding: padding,
-                                  animated: true)
-        }
-
-        func updateTracking(on map: MKMapView) {
-            // Deprecated: Intentionally left empty as tracking should not be forced arbitrarily
-            // by Swiftui state updates.
-        }
-
-        func clearNavigation() {
-            guard let map = mapView else { return }
-            if let p = currentPolyline { map.removeOverlay(p); currentPolyline = nil }
-            if let a = destinationAnnotation { map.removeAnnotation(a); destinationAnnotation = nil }
-            map.setUserTrackingMode(.followWithHeading, animated: true)
-        }
-
-        // MARK: MKMapViewDelegate
-
-        // Route polyline renderer — cyan color matching design system
-        func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
-            if let polyline = overlay as? MKPolyline {
-                let renderer = MKPolylineRenderer(polyline: polyline)
-                renderer.strokeColor = UIColor(red: 0, green: 0.83, blue: 1.0, alpha: 0.9)
-                renderer.lineWidth = 6
-                renderer.lineCap = .round
-                renderer.lineJoin = .round
-                return renderer
-            }
-            return MKOverlayRenderer(overlay: overlay)
-        }
-
-        // Destination annotation view
-        func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
-            guard !(annotation is MKUserLocation) else { return nil }
-            let id = "destination"
-            let view = mapView.dequeueReusableAnnotationView(withIdentifier: id)
-                ?? MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: id)
-            if let marker = view as? MKMarkerAnnotationView {
-                marker.markerTintColor = UIColor(red: 1, green: 0.24, blue: 0.44, alpha: 1)
-                marker.glyphImage = UIImage(systemName: "flag.fill")
-                marker.canShowCallout = true
-            }
-            return view
-        }
-
-        // Detect when user starts panning — stop auto-centering
-        func mapView(_ mapView: MKMapView, regionWillChangeAnimated animated: Bool) {
-            let view = mapView.subviews.first
-            // Check if the gesture is from a user (gesture recognizers present)
-            if let recognizers = view?.gestureRecognizers {
-                for recognizer in recognizers {
-                    if recognizer.state == .began || recognizer.state == .changed {
-                        userInteracting = true
-                        break
-                    }
+                        if !driveViewModel.isSelectingRoute && !driveViewModel.isSearchingLocally {
+                            // Bottom chrome redesign — NO panel background.
+                            // The SpeedReadout (leading), START/STOP pill
+                            // (center), and LimitSignView (trailing) are three
+                            // independent floating widgets that just sit over
+                            // the map; the road-name chip floats centered
+                            // above them. All padding is handled internally by
+                            // `BottomTransparentHUD` so the parent only sets
+                            // safe-area + horizontal breathing room.
+                            BottomTransparentHUD(isLandscape: isLandscape)
+                                .padding(.horizontal, 16)
+                                .padding(.bottom, geo.safeAreaInsets.bottom + 12)
+                        }
+                    } // Group — bottom section
+                    .offset(y: 45)
                 }
             }
+            .animation(.spring(response: 0.5, dampingFraction: 0.8), value: driveViewModel.isNavigating)
+            .animation(.easeInOut(duration: 0.25), value: driveViewModel.isMapDetached)
+            .animation(.easeInOut(duration: 0.3), value: driveViewModel.nearbyAmenities.count)
         }
-
-        // After user stops interacting, re-enable tracking after 5s
-        func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
-            if userInteracting {
-                userInteracting = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak mapView] in
-                    // Only resume if user hasn't started interacting again
-                    if mapView?.userTrackingMode == .none {
-                        mapView?.setUserTrackingMode(.followWithHeading, animated: true)
-                    }
-                }
-            }
+        .sheet(isPresented: $driveViewModel.showNameLocationSheet) {
+            NameLocationSheet()
+                .environmentObject(driveViewModel)
+                .presentationDetents([.height(400)])
+                .presentationDragIndicator(.visible)
+                .presentationCornerRadius(24)
+                .preferredColorScheme(.dark)
+        }
+        .sheet(isPresented: $driveViewModel.showRouteStopsSheet) {
+            RouteStopsSheet()
+                .environmentObject(driveViewModel)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .presentationCornerRadius(24)
+                .preferredColorScheme(.dark)
         }
     }
 }
 
-// MARK: - Search Bar
-
-struct SearchBarWithResults: View {
-    @EnvironmentObject var vm: DriveViewModel
-    @State private var query: String = ""
-    @State private var showResults: Bool = false
-    @FocusState private var focused: Bool
-
+fileprivate struct NavigationInstructionCard: View {
+    @EnvironmentObject var driveViewModel: DriveViewModel
+    
     var body: some View {
-        VStack(spacing: 0) {
-            // Search input row
-            HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundColor(Color(hex: "#00D4FF"))
-                    .font(.system(size: 16, weight: .medium))
+        VStack(spacing: 8) {
+            // Main navigation info row
+            HStack(spacing: 14) {
+                // Maneuver Icon — fixed size, never overlaps text
+                Image(systemName: driveViewModel.nextManeuverImageName)
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundColor(DesignSystem.cyan)
+                    .frame(width: 44, height: 44)
+                    .background(DesignSystem.cyan.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .frame(width: 44, height: 44) // fixed size — never shrinks into text
 
-                TextField("", text: $query, prompt:
-                    Text("Search destination...")
-                        .foregroundColor(Color(hex: "#8888AA"))
-                )
-                .foregroundColor(.white)
-                .font(.system(size: 16))
-                .focused($focused)
-                .submitLabel(.search)
-                .onSubmit { triggerSearch() }
-                .onChange(of: query) { newValue in
-                    if newValue.isEmpty {
-                        vm.searchResults = []
-                        showResults = false
+                // Instruction text — gets all remaining space
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(driveViewModel.nextManeuverInstruction.isEmpty ? "Follow the route" : driveViewModel.nextManeuverInstruction)
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundColor(.white)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.75)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    HStack(spacing: 6) {
+                        Text(formatDistance(driveViewModel.distanceToNextTurn))
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundColor(DesignSystem.cyan)
+
+                        if let eta = driveViewModel.eta {
+                            Text("·")
+                                .foregroundColor(.white.opacity(0.4))
+                            Text("ETA \(eta, format: .dateTime.hour().minute())")
+                                .font(.system(size: 13))
+                                .foregroundColor(.white.opacity(0.6))
+                        }
+                    }
+
+                    // Stops count badge
+                    if !driveViewModel.routeStops.isEmpty {
+                        HStack(spacing: 4) {
+                            Image(systemName: "mappin.and.ellipse")
+                                .font(.system(size: 9))
+                                .foregroundColor(DesignSystem.amber)
+                            Text("\(driveViewModel.routeStops.count) stop\(driveViewModel.routeStops.count > 1 ? "s" : "") · \(totalViaTime)")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(DesignSystem.amber)
+                        }
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-                if !query.isEmpty {
-                    Button(action: triggerSearch) {
-                        Text("Go")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundColor(.black)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 6)
-                            .background(Color(hex: "#00D4FF"))
-                            .clipShape(Capsule())
-                    }
-
-                    Button(action: clearSearch) {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundColor(Color(hex: "#8888AA"))
-                            .font(.system(size: 16))
-                    }
+                // Dismiss button
+                Button(action: {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    Task { await driveViewModel.endNavigation() }
+                }) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(.white.opacity(0.6))
+                        .padding(10)
+                        .background(Circle().fill(Color.white.opacity(0.1)))
                 }
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .background(DesignSystem.glassBackground)
-            .shadow(color: .black.opacity(0.4), radius: 12, x: 0, y: 4)
+            .padding(.top, 10)
+            .padding(.bottom, driveViewModel.routeStops.count >= 2 ? 4 : 10)
 
-            // Results dropdown
-            if showResults && !vm.searchResults.isEmpty {
-                VStack(spacing: 0) {
-                    ForEach(vm.searchResults.indices, id: \.self) { i in
-                        let item = vm.searchResults[i]
-                        Button(action: {
-                            selectDestination(item)
-                        }) {
-                            HStack(spacing: 12) {
-                                Image(systemName: "mappin.circle.fill")
-                                    .foregroundColor(Color(hex: "#FF3D71"))
-                                    .font(.system(size: 18))
-
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(item.name ?? "Unknown")
-                                        .foregroundColor(.white)
-                                        .font(.system(size: 14, weight: .medium))
-                                        .lineLimit(1)
-                                    if let addr = item.placemark.title {
-                                        Text(addr)
-                                            .foregroundColor(Color(hex: "#8888AA"))
-                                            .font(.system(size: 12))
-                                            .lineLimit(1)
-                                    }
-                                }
-                                Spacer()
-                            }
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
+            // The in-card "+ Add Stop" / "Edit Stops" button was removed per
+            // TestFlight feedback 72. Stop management remains available in the
+            // dedicated "Add Stops" shortcut row below this card, while the
+            // optimization action stays here only when it is useful for 2+
+            // stops.
+            if driveViewModel.routeStops.count >= 2 {
+                HStack(spacing: 8) {
+                    Button(action: {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        driveViewModel.showRouteStopsSheet = true
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.triangle.swap")
+                                .font(.system(size: 10))
+                            Text("Optimize")
+                                .font(.system(size: 11, weight: .bold))
                         }
-
-                        if i < vm.searchResults.count - 1 {
-                            Divider()
-                                .background(Color(hex: "#1A1B2E"))
-                                .padding(.leading, 44)
-                        }
+                        .foregroundColor(DesignSystem.amber)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(DesignSystem.amber.opacity(0.25), lineWidth: 1)
+                        )
                     }
-                }
-                .background(
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(Color(hex: "#0F1022").opacity(0.97))
-                        .shadow(color: .black.opacity(0.5), radius: 16, x: 0, y: 8)
-                )
-                .padding(.top, 4)
-            }
+                    .buttonStyle(.plain)
 
-            // Loading indicator
-            if vm.isSearching {
-                HStack {
-                    ProgressView()
-                        .progressViewStyle(CircularProgressViewStyle(tint: Color(hex: "#00D4FF")))
-                        .scaleEffect(0.8)
-                    Text("Searching...")
-                        .foregroundColor(Color(hex: "#8888AA"))
-                        .font(.system(size: 13))
+                    Spacer()
                 }
-                .padding(.vertical, 10)
                 .padding(.horizontal, 14)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(Color(hex: "#0F1022").opacity(0.97))
-                )
-                .padding(.top, 4)
+                .padding(.bottom, 12)
             }
         }
-        .onChange(of: vm.searchResults) { results in
-            showResults = !results.isEmpty
-        }
+        .liquidGlass(interactive: true)
     }
 
-    private func triggerSearch() {
-        guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-        Task { await vm.searchDestination(query: query) }
+    private var totalViaTime: String {
+        let total = driveViewModel.routeLegs.reduce(0) { $0 + $1.travelTime }
+        let min = Int(total / 60)
+        if min < 60 { return "\(min) min total" }
+        return "\(min / 60)h \(min % 60)m total"
     }
 
-    private func clearSearch() {
-        query = ""
-        vm.searchResults = []
-        showResults = false
-        focused = false
-        vm.endNavigation()
-    }
-
-    private func selectDestination(_ item: MKMapItem) {
-        focused = false
-        showResults = false
-        query = item.name ?? ""
-        Task { await vm.startNavigation(to: item) }
+    private func formatDistance(_ distance: CLLocationDistance) -> String {
+        SpeedFormatting.navigationDistanceLabel(
+            forMeters: distance,
+            measurementSystem: SpeedFormatting.measurementSystem()
+        )
     }
 }
 
-// MARK: - Speed HUD Pill
+fileprivate struct SearchBarView: View {
+    @EnvironmentObject var driveViewModel: DriveViewModel
+    let isLandscape: Bool
+    @State private var searchText = ""
+    /// Keeps the results overlay visible after the keyboard is dismissed.
+    /// Focus controls the keyboard; this state controls search-mode visibility.
+    @State private var isSearchActive = false
+    @State private var searchSelectionGeneration = 0
+    /// True after the keyboard Search action switches from live completions
+    /// to the larger, resolved destination list.
+    @State private var isShowingSubmittedResults = false
+    /// Invalidates an in-flight manual search when the user starts a new one
+    /// or dismisses the search UI.
+    @State private var searchSubmissionGeneration = 0
+    @FocusState private var isFocused: Bool
 
-struct SpeedHUDPill: View {
-    @EnvironmentObject var vm: DriveViewModel
-    @Environment(\.horizontalSizeClass) var sizeClass
+    /// Ends the search interaction immediately when the user chooses a
+    /// destination. The route calculation can take a moment; leaving the
+    /// local-search lock set until it finishes makes the tap look ignored and
+    /// hides the route picker during that wait.
+    private func finishSearchSelection() -> Int {
+        searchSelectionGeneration &+= 1
+        searchSubmissionGeneration &+= 1
+        searchText = ""
+        isSearchActive = false
+        isShowingSubmittedResults = false
+        driveViewModel.isSearchingLocally = false
+        // Clear both local and published search state before starting route
+        // calculation. This removes the result card immediately instead of
+        // leaving it visible while MapKit resolves the route.
+        driveViewModel.searchCompletions = []
+        driveViewModel.searchResults = []
+        dismissKeyboard()
+        return searchSelectionGeneration
+    }
 
-    // Pulse animation for overspeed
-    @State private var pulsing = false
+    /// Reopens search if MapKit cannot resolve a tapped completion. The user
+    /// should never be left with an empty, hidden search bar after a failed
+    /// destination lookup. Ignore an obsolete failure if the user cancelled
+    /// or started another selection while this lookup was suspended.
+    private func restoreSearchAfterSelectionFailure(query: String, generation: Int) {
+        guard generation == searchSelectionGeneration else { return }
+        searchText = query
+        isSearchActive = true
+        isShowingSubmittedResults = false
+        driveViewModel.isSearchingLocally = true
+        driveViewModel.updateSearchQuery(query)
+        isFocused = true
+    }
 
-    private var isLandscape: Bool { sizeClass == .regular }
-
+    /// Activates the search field and returns to live completion mode.
+    private func activateSearch() {
+        isSearchActive = true
+        isShowingSubmittedResults = false
+        driveViewModel.isSearchingLocally = true
+        isFocused = true
+    }
+    
     var body: some View {
-        HStack(spacing: isLandscape ? 12 : 16) {
-
-            // ── Speed Limit Badge
-            SpeedLimitBadge(limit: vm.limit, limitSource: vm.limitSource)
-                .frame(width: isLandscape ? 44 : 56, height: isLandscape ? 44 : 56)
-
-            Divider()
-                .frame(height: isLandscape ? 32 : 44)
-                .background(Color(hex: "#1A1B2E"))
-
-            // ── Current Speed
-            VStack(spacing: 2) {
-                if vm.isRecording {
-                    RecordingBadge(duration: vm.sessionDuration)
+        VStack(spacing: 6) {
+            HStack(spacing: isLandscape ? 6 : 10) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundColor(DesignSystem.cyan)
+                    .font(.system(size: isLandscape ? 12 : 14, weight: .bold))
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        activateSearch()
+                    }
+                
+                TextField("Where to?", text: $searchText)
+                    .foregroundColor(.white)
+                    .font(.system(size: isLandscape ? 12 : 14, weight: .medium))
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .focused($isFocused)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        activateSearch()
+                    }
+                    .submitLabel(.search)
+                    .onSubmit {
+                        dismissKeyboardForResults()
+                    }
+                    .onChange(of: searchText) { _, newValue in
+                        isShowingSubmittedResults = false
+                        driveViewModel.updateSearchQuery(newValue)
+                    }
+                    .onChange(of: isFocused) { _, newValue in
+                        if newValue {
+                            isSearchActive = true
+                            isShowingSubmittedResults = false
+                            driveViewModel.isSearchingLocally = true
+                        }
+                    }
+                
+                if isSearchActive || !searchText.isEmpty {
+                    Button(action: {
+                        searchSelectionGeneration &+= 1
+                        searchSubmissionGeneration &+= 1
+                        searchText = ""
+                        isShowingSubmittedResults = false
+                        driveViewModel.updateSearchQuery("")
+                        isSearchActive = false
+                        driveViewModel.isSearchingLocally = false
+                        driveViewModel.searchCompletions = []
+                        driveViewModel.searchResults = []
+                        dismissKeyboard()
+                        // Clear any proposed route alternatives + map polylines
+                        // that were rendered for the previous search so they
+                        // don't linger on the map after the user dismisses
+                        // the search bar via the X button. TestFlight 2.2.0
+                        // (b377) feedback from srihan.yeleswarapu@gmail.com:
+                        // "When I 'X' out of the search, the directions
+                        // options should also go away." Mirrors the dismissal
+                        // logic in `RouteSelectionCard`'s own X handler so
+                        // both dismiss paths reach the same end state
+                        // (clear polylines, hide picker card, drop selected
+                        // destination reference).
+                        driveViewModel.isSelectingRoute = false
+                        driveViewModel.availableRoutes = []
+                        driveViewModel.destination = nil
+                    }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.white.opacity(0.4))
+                            .font(.system(size: 12))
+                    }
+                    .accessibilityLabel("Cancel search")
                 }
-                Text(String(format: "%.0f", vm.speed))
-                    .font(DesignSystem.speedFont(landscape: isLandscape))
-                    .foregroundColor(speedColor)
-                    .monospacedDigit()
-                    .contentTransition(.numericText())
-                Text("MPH")
-                    .font(DesignSystem.labelFont)
-                    .foregroundColor(Color(hex: "#8888AA"))
-                    .kerning(2)
             }
-            .frame(minWidth: isLandscape ? 70 : 90)
-
-            Divider()
-                .frame(height: isLandscape ? 32 : 44)
-                .background(Color(hex: "#1A1B2E"))
-
-            // ── Status indicator dot
-            Circle()
-                .fill(statusColor)
-                .frame(width: 14, height: 14)
-                .scaleEffect(pulsing && vm.status == .over ? 1.35 : 1.0)
-                .animation(
-                    vm.status == .over
-                        ? .easeInOut(duration: 0.6).repeatForever(autoreverses: true)
-                        : .default,
-                    value: pulsing
-                )
-                .onAppear { pulsing = true }
-
-            Spacer()
-
-            // ── Navigation status (when active)
-            if vm.isNavigating {
-                NavigationInfoMini()
-                    .environmentObject(vm)
+            .padding(.horizontal, isLandscape ? 10 : 12)
+            .frame(height: isLandscape ? 36 : 48)
+            .frame(maxWidth: isLandscape ? 360 : .infinity, alignment: .center)
+            .liquidGlassChip(cornerRadius: isLandscape ? 10 : 14, tint: DesignSystem.cyan.opacity(0.04), interactive: true)
+            // The background gesture covers the empty parts of the capsule,
+            // while the TextField, magnifier, and clear button remain the
+            // front-most controls. This lets a keyboard-dismissed search be
+            // re-focused by tapping anywhere in the bar without making the
+            // clear button immediately re-open the keyboard.
+            .background {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        activateSearch()
+                    }
+            }
+            
+            if isSearchActive && !searchText.isEmpty {
+                // Named locations section — only shown when actively typing.
+                // TestFlight FB (srihan.yeleswarapu): "If I type something
+                // into the search bar, and then backspace it completely,
+                // then everything shows up!" Showing all saved locations
+                // when the search field is empty overwhelmed the screen.
+                // Gate on !searchText.isEmpty so the list only appears
+                // when the user is actively filtering.
+                let filteredNamed = driveViewModel.namedLocations.filter { $0.name.lowercased().contains(searchText.lowercased()) }
+                
+                if !filteredNamed.isEmpty {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("SAVED LOCATIONS")
+                            .font(.system(size: 10, weight: .black))
+                            .foregroundColor(DesignSystem.cyan.opacity(0.7))
+                            .padding(.horizontal, 16)
+                            .padding(.top, 12)
+                            .padding(.bottom, 8)
+                        
+                        ScrollView(.vertical, showsIndicators: true) {
+                            VStack(alignment: .leading, spacing: 0) {
+                                ForEach(filteredNamed.prefix(5)) { namedLoc in
+                                    Button(action: {
+                                        let coord = CLLocationCoordinate2D(latitude: namedLoc.latitude, longitude: namedLoc.longitude)
+                                        let placemark = MKPlacemark(coordinate: coord)
+                                        let item = MKMapItem(placemark: placemark)
+                                        item.name = namedLoc.name
+                                        _ = finishSearchSelection()
+                                        Task {
+                                            await driveViewModel.selectDestinationAndCalculateRoutes(to: item)
+                                        }
+                                    }) {
+                                        HStack(spacing: 12) {
+                                            ZStack {
+                                                Image(systemName: "house.fill")
+                                                    .font(.system(size: 12))
+                                                    .foregroundColor(DesignSystem.cyan)
+                                                Image(systemName: "tag.fill")
+                                                    .font(.system(size: 6))
+                                                    .foregroundColor(DesignSystem.amber)
+                                                    .offset(x: 6, y: -6)
+                                            }
+                                            .frame(width: 24)
+                                            
+                                            VStack(alignment: .leading, spacing: 1) {
+                                                Text(namedLoc.name)
+                                                    .font(.system(size: 15, weight: .semibold))
+                                                    .foregroundColor(.white)
+                                                    .lineLimit(1)
+                                                if let addr = namedLoc.address, !addr.isEmpty {
+                                                    Text(addr)
+                                                        .font(.system(size: 11))
+                                                        .foregroundColor(.white.opacity(0.45))
+                                                        .lineLimit(1)
+                                                }
+                                            }
+                                            
+                                            Spacer()
+                                            
+                                            Image(systemName: "arrow.turn.up.right")
+                                                .font(.system(size: 11, weight: .bold))
+                                                .foregroundColor(.white.opacity(0.3))
+                                        }
+                                        .padding(.vertical, 12)
+                                        .padding(.horizontal, 16)
+                                    }
+                                    
+                                    if namedLoc != filteredNamed.prefix(5).last {
+                                        Divider()
+                                            .background(Color.white.opacity(0.1))
+                                            .padding(.horizontal, 16)
+                                    }
+                                }
+                            }
+                        }
+                        .frame(maxHeight: 180)
+                        .scrollIndicators(.visible)
+                    }
+                    .liquidGlass(cornerRadius: 16, interactive: true)
+                    .padding(.top, 2)
+                }
+            }
+            
+            if isSearchActive && !driveViewModel.recentSearches.isEmpty {
+                let filteredSearches = searchText.isEmpty ? driveViewModel.recentSearches : driveViewModel.recentSearches.filter { $0.lowercased().contains(searchText.lowercased()) }
+                
+                if !filteredSearches.isEmpty {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(searchText.isEmpty ? "RECENT SEARCHES" : "MATCHING RECENT")
+                            .font(.system(size: 10, weight: .black))
+                            .foregroundColor(.white.opacity(0.4))
+                            .padding(.horizontal, 16)
+                            .padding(.top, 12)
+                            .padding(.bottom, 8)
+                        
+                        ScrollView(.vertical, showsIndicators: true) {
+                            VStack(alignment: .leading, spacing: 0) {
+                                ForEach(filteredSearches.prefix(5), id: \.self) { search in
+                                    HStack(spacing: 0) {
+                                        Button(action: {
+                                            searchText = search
+                                            let generation = finishSearchSelection()
+                                            Task {
+                                                await driveViewModel.searchDestination(query: search)
+                                                guard generation == searchSelectionGeneration else { return }
+                                                if let item = driveViewModel.searchResults.first {
+                                                    await driveViewModel.selectDestinationAndCalculateRoutes(to: item)
+                                                } else {
+                                                    restoreSearchAfterSelectionFailure(query: search, generation: generation)
+                                                }
+                                            }
+                                        }) {
+                                            HStack {
+                                                Image(systemName: "clock.arrow.circlepath")
+                                                    .font(.system(size: 14))
+                                                    .foregroundColor(DesignSystem.cyan)
+                                                
+                                                Text(search)
+                                                    .font(.system(size: 16, weight: .medium))
+                                                    .foregroundColor(.white)
+                                                
+                                                Spacer()
+                                            }
+                                            .padding(.vertical, 14)
+                                            .padding(.horizontal, 16)
+                                        }
+                                        
+                                        // X button to delete individual recent search entry
+                                        Button(action: {
+                                            driveViewModel.removeRecentSearch(search)
+                                        }) {
+                                            Image(systemName: "xmark")
+                                                .font(.system(size: 11, weight: .bold))
+                                                .foregroundColor(.white.opacity(0.3))
+                                                .padding(.trailing, 16)
+                                                .padding(.vertical, 14)
+                                                .contentShape(Rectangle())
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                    
+                                    if search != filteredSearches.prefix(5).last {
+                                        Divider()
+                                            .background(Color.white.opacity(0.1))
+                                            .padding(.horizontal, 16)
+                                    }
+                                }
+                            }
+                        }
+                        .frame(maxHeight: 200)
+                        .scrollIndicators(.visible)
+                    }
+                    .liquidGlass(cornerRadius: 16, interactive: true)
+                    .padding(.top, 2)
+                }
+            }
+            
+            if !driveViewModel.searchCompletions.isEmpty && isSearchActive && !searchText.isEmpty && !isShowingSubmittedResults {
+                VStack(spacing: 0) {
+                    ScrollView(.vertical, showsIndicators: true) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(driveViewModel.searchCompletions, id: \.self) { completion in
+                                Button(action: {
+                                    let query = [completion.title, completion.subtitle]
+                                        .filter { !$0.isEmpty }
+                                        .joined(separator: ", ")
+                                    let generation = finishSearchSelection()
+                                    Task {
+                                        guard let item = await driveViewModel.selectCompletion(completion) else {
+                                            restoreSearchAfterSelectionFailure(query: query, generation: generation)
+                                            return
+                                        }
+                                        await driveViewModel.selectDestinationAndCalculateRoutes(to: item)
+                                    }
+                                }) {
+                                    HStack(alignment: .firstTextBaseline) {
+                                        Text(completion.title)
+                                            .font(.system(size: 16, weight: .semibold))
+                                            .foregroundColor(.white)
+                                            .lineLimit(1)
+                                        
+                                        Spacer()
+                                        
+                                        if !completion.subtitle.isEmpty {
+                                            Text(completion.subtitle)
+                                                .font(.system(size: 11))
+                                                .foregroundColor(.white.opacity(0.4))
+                                                .lineLimit(1)
+                                                .frame(maxWidth: 160, alignment: .trailing)
+                                        }
+                                    }
+                                    .padding(.vertical, 14)
+                                    .padding(.horizontal, 16)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                
+                                if completion != driveViewModel.searchCompletions.last {
+                                    Divider()
+                                        .background(Color.white.opacity(0.1))
+                                        .padding(.horizontal, 16)
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxHeight: isLandscape ? 220 : 360)
+                    .scrollIndicators(.visible)
+                }
+                .liquidGlass(cornerRadius: 16, interactive: true)
+                .padding(.top, 2)
             }
 
-            // ── Start / Stop button
-            Button(action: {
-                if vm.isRecording { vm.endSession() }
-                else { vm.startSession() }
-            }) {
-                Text(vm.isRecording ? "STOP" : "START")
-                    .font(.system(size: isLandscape ? 11 : 13, weight: .bold))
-                    .foregroundColor(vm.isRecording ? .white : .black)
-                    .frame(width: 72, height: 40)
-                    .background(
-                        Capsule()
-                            .fill(vm.isRecording
-                                  ? Color(hex: "#FF3D71")
-                                  : Color(hex: "#00D4FF"))
-                    )
+            // Resolved destination results from the keyboard's Search action.
+            // Manual search results intentionally replace live completions so
+            // the keyboard can go away and the user can inspect more choices.
+            if isShowingSubmittedResults && isSearchActive && !searchText.isEmpty && !driveViewModel.searchResults.isEmpty {
+                VStack(spacing: 0) {
+                    ScrollView(.vertical, showsIndicators: true) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(Array(driveViewModel.searchResults.enumerated()), id: \.offset) { index, item in
+                                Button {
+                                    _ = finishSearchSelection()
+                                    Task {
+                                        await driveViewModel.selectDestinationAndCalculateRoutes(to: item)
+                                    }
+                                } label: {
+                                    HStack(spacing: 12) {
+                                        Image(systemName: "mappin.circle.fill")
+                                            .font(.system(size: 17))
+                                            .foregroundColor(DesignSystem.cyan)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(item.name ?? "Unnamed place")
+                                                .font(.system(size: 16, weight: .semibold))
+                                                .foregroundColor(.white)
+                                                .lineLimit(1)
+                                            if let address = item.placemark.title, !address.isEmpty {
+                                                Text(address)
+                                                    .font(.system(size: 11))
+                                                    .foregroundColor(.white.opacity(0.45))
+                                                    .lineLimit(1)
+                                            }
+                                        }
+                                        Spacer(minLength: 4)
+                                        Image(systemName: "arrow.turn.up.right")
+                                            .font(.system(size: 11, weight: .bold))
+                                            .foregroundColor(.white.opacity(0.3))
+                                    }
+                                    .padding(.vertical, 13)
+                                    .padding(.horizontal, 16)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                if index < driveViewModel.searchResults.count - 1 {
+                                    Divider()
+                                        .background(Color.white.opacity(0.1))
+                                        .padding(.horizontal, 16)
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxHeight: isLandscape ? 220 : 360)
+                    .scrollIndicators(.visible)
+                }
+                .liquidGlass(cornerRadius: 16, interactive: true)
+                .padding(.top, 2)
             }
         }
-        .padding(.horizontal, isLandscape ? 14 : 18)
-        .padding(.vertical, isLandscape ? 10 : 14)
-        .background(DesignSystem.glassBackground)
-        .shadow(color: .black.opacity(0.45), radius: 20, x: 0, y: 6)
-        .overlay(
-            Capsule()
-                .strokeBorder(
-                    vm.status == .over
-                        ? Color(hex: "#FF3D71").opacity(0.6)
-                        : Color(hex: "#1A1B2E").opacity(0.1),
-                    lineWidth: 1
-                )
+    }
+    
+    /// Explicitly resign the UIKit first responder as well as the SwiftUI
+    /// focus binding. The direct responder call makes the keyboard collapse
+    /// reliably on device before the larger result card is laid out.
+    private func dismissKeyboard() {
+        isFocused = false
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
         )
     }
 
-    private var speedColor: Color {
-        switch vm.status {
-        case .safe: return .white
-        case .warning: return Color(hex: "#FFB800")
-        case .over: return Color(hex: "#FF3D71")
-        }
-    }
+    /// The keyboard's Search action dismisses the keyboard and replaces the
+    /// live completions with a larger resolved destination list. Keeping the
+    /// search active lets the user scroll and choose deliberately instead of
+    /// routing to the first completion.
+    private func dismissKeyboardForResults() {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        isSearchActive = true
+        dismissKeyboard()
 
-    private var statusColor: Color {
-        switch vm.status {
-        case .safe: return Color(hex: "#00FF9D")
-        case .warning: return Color(hex: "#FFB800")
-        case .over: return Color(hex: "#FF3D71")
+        guard !query.isEmpty else {
+            // Empty Search submit just collapses the keyboard. Stay in search
+            // mode (TestFlight 2.3.0 b643: backspacing to empty must not snap
+            // the bottom HUD back over the map) — the X button is the
+            // deliberate exit, and it clears `isSearchingLocally` itself.
+            isShowingSubmittedResults = false
+            return
+        }
+
+        searchSubmissionGeneration &+= 1
+        isShowingSubmittedResults = true
+        driveViewModel.isSearchingLocally = true
+        // A completion callback can arrive after submit. Hide it while the
+        // manual search is in flight so stale suggestions do not block the
+        // resolved result list.
+        driveViewModel.searchCompletions = []
+        driveViewModel.searchResults = []
+
+        let generation = searchSubmissionGeneration
+        Task {
+            let results = await driveViewModel.searchDestination(
+                query: query,
+                publishResults: false
+            )
+            // Publish only the response that still matches the visible query;
+            // an older MapKit request must not replace a newer result list.
+            guard generation == searchSubmissionGeneration,
+                  isSearchActive,
+                  searchText.trimmingCharacters(in: .whitespacesAndNewlines) == query else { return }
+            driveViewModel.searchResults = results
         }
     }
 }
 
-// MARK: - Speed Limit Badge
-
-struct SpeedLimitBadge: View {
-    let limit: Int
-    let limitSource: LimitSource
+// MARK: - BottomTransparentHUD
+//
+// Replaces the legacy `SpeedHUDPill` (which forced all chrome into a
+// single glass-frosted panel). User wanted three independent floating
+// widgets so the map is fully visible underneath, so we DROP the
+// `.glassStyle()` and let the HStack naturally space its children:
+//   • [leading] SpeedReadout — huge speed number with status color, plus
+//     the unit label and an optional REC indicator above.
+//   • [center]  START/STOP pill — cyan capsule, red while recording.
+//   • [trailing] LimitSignView — white-faced circle with red ring + the
+//     small source-chip caption beneath.
+//
+// The road-name chip floats centered above the HStack, also no
+// background. Each widget is a separate fileprivate struct so the layout
+// can be tweaked individually in future iterations without churning the
+// whole bottom chrome.
+//
+// `alignment: .bottom` makes the giant speed number "sit" on the same
+// baseline as the smaller START button + smaller limit sign so the eye
+// reads them as a single horizontal row even with NO panel backdrop
+// holding them together.
+fileprivate struct BottomTransparentHUD: View {
+    @EnvironmentObject var driveViewModel: DriveViewModel
+    let isLandscape: Bool
 
     var body: some View {
-        VStack(spacing: 2) {
-            ZStack {
-                Circle()
-                    .fill(.white)
-                    .overlay(Circle().strokeBorder(Color.red, lineWidth: 3))
+        VStack(spacing: 8) {
+            // Road name chip — glass chip floating centered above the HUD.
+            // Hidden when nil (first 1-2 GPS ticks before the geocode resolves,
+            // or after `clearNativeMapCache` runs at end-session, or on
+            // a parking lot where geocode returns no thoroughfare).
+            if let roadName = driveViewModel.currentRoadName, !roadName.isEmpty {
+                Text(roadName.uppercased())
+                    .font(.system(size: isLandscape ? 9 : 10, weight: .black, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.72))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 5)
+                    .liquidGlassChip(cornerRadius: 8, tint: DesignSystem.cyan.opacity(0.03))
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
 
-                VStack(spacing: 0) {
-                    Spacer(minLength: 4)
-                    Text(limit > 0 ? "\(limit)" : "--")
-                        .font(.system(size: limit >= 100 ? 13 : 17, weight: .black))
-                        .foregroundColor(.black)
-                    ZStack {
-                        Rectangle()
-                            .fill(Color.red)
-                            .frame(height: 14)
-                            .clipShape(.rect(bottomLeadingRadius: 100, bottomTrailingRadius: 100))
-                        Text("MPH")
-                            .font(.system(size: 7, weight: .bold))
-                            .foregroundColor(.white)
+            // Bottom row — three independent floating widgets over the map.
+            // SpeedReadout (leading), START/STOP with Focus badge (center), LimitSignView (trailing).
+            // The Focus button is overlaid on the top-trailing edge of the START/STOP capsule
+            // so the original 3-column balance is preserved, even on narrow screens.
+            HStack(alignment: .bottom, spacing: 0) {
+                SpeedReadout(isLandscape: isLandscape)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                
+                Button(action: {
+                    if driveViewModel.isRecording {
+                        HapticAlertManager.playRecordingStopped()
+                        driveViewModel.endSession()
+                    } else {
+                        HapticAlertManager.playRecordingStarted()
+                        driveViewModel.startSession()
+                    }
+                }) {
+                    ZStack(alignment: .topTrailing) {
+                        Text(driveViewModel.isRecording ? "STOP" : "START")
+                            .font(.system(size: isLandscape ? 12 : 14, weight: .black))
+                            .foregroundColor(driveViewModel.isRecording ? .white : .black)
+                            .frame(width: isLandscape ? 72 : 86, height: isLandscape ? 38 : 44)
+                            .background(driveViewModel.isRecording ? DesignSystem.alertRed : DesignSystem.cyan)
+                            .clipShape(Capsule())
+                            .shadow(color: (driveViewModel.isRecording ? DesignSystem.alertRed : DesignSystem.cyan).opacity(0.4), radius: 10)
+                        
+                        // Focus Mode badge inset on the top-trailing edge of the capsule
+                        Button(action: {
+                            HapticAlertManager.playFocusModeEnter()
+                            driveViewModel.isDriveFocusMode = true
+                        }) {
+                            Image(systemName: "eye.fill")
+                                .font(.system(size: isLandscape ? 7 : 8, weight: .black))
+                                .foregroundColor(.white)
+                                .padding(4)
+                                .background(Circle().fill(DesignSystem.cyan))
+                                .overlay(Circle().stroke(Color.black, lineWidth: 1.5))
+                        }
+                        .buttonStyle(.plain) // no double-highlight from nested buttons
+                        .offset(x: 6, y: -6)
                     }
                 }
+                .offset(x: -30)
+                .frame(maxWidth: .infinity, alignment: .center)
+                LimitSignView(
+                    limit: driveViewModel.limit,
+                    source: driveViewModel.speedLimitSource,
+                    isLandscape: isLandscape,
+                    onTap: {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        Task { await driveViewModel.manualRefetchSpeedLimit() }
+                    },
+                    isRefreshing: driveViewModel.isRefreshingSpeedLimit
+                )
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
-            .frame(width: 52, height: 52)
-
-            Text(limitSource.rawValue)
-                .font(.system(size: 8, weight: .medium))
-                .foregroundColor(sourceColor)
-                .kerning(0.5)
         }
+        // NO .glassStyle() — each widget floats independently over the
+        // map. Safe-area bottom inset is applied by the parent.
+    }
+}
+
+// MARK: - SpeedReadout
+//
+// Floating speed-number widget extracted from the legacy `SpeedHUDPill`.
+// Big rounded number in the live status color, plus the unit label
+// (mph / kmh) on the right of the baseline, plus an optional REC
+// indicator dot + timer on top so the user sees recording status at a
+// glance. Lives on the leading edge of the bottom chrome row.
+fileprivate struct SpeedReadout: View {
+    @EnvironmentObject var driveViewModel: DriveViewModel
+    let isLandscape: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if driveViewModel.isRecording {
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(DesignSystem.alertRed)
+                        .frame(width: 6, height: 6)
+                    Text("REC \(recDuration)")
+                        .font(.system(size: isLandscape ? 10 : 12, weight: .black))
+                        .foregroundColor(DesignSystem.alertRed)
+                }
+                .padding(.bottom, 2)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text("\(Int(driveViewModel.speed))")
+                    .font(.system(size: isLandscape ? 52 : 64, weight: .black, design: .rounded))
+                    .foregroundColor(DesignSystem.colorForStatus(driveViewModel.status))
+                    .contentTransition(.numericText())
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .minimumScaleFactor(0.85)
+
+                // Unit label honors Settings → UNITS so the speed
+                // readout matches the LIMIT sign to its right.
+                Text(SpeedFormatting.unitLabelShort(measurementSystem: SpeedFormatting.measurementSystem()))
+                    .font(.system(size: isLandscape ? 12 : 14, weight: .black))
+                    .foregroundColor(.white.opacity(0.4))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+        }
+        .frame(minWidth: isLandscape ? 110 : 132, alignment: .leading)
+        .padding(.leading, 14)
+        .padding(.trailing, 18)
+        .padding(.vertical, 10)
     }
 
-    private var sourceColor: Color {
-        switch limitSource {
-        case .localVerified: return Color(hex: "#00FF9D")
-        case .localTemporary: return Color(hex: "#00D4FF")
-        case .adot: return Color(hex: "#FFB800")
-        case .estimating: return Color(hex: "#8888AA")
+    /// Same `%H:%M:%S` formatting the legacy `SpeedHUDPill.formatDuration`
+    /// used; lifted to a computed property because the speed readout is
+    /// now its own View (was nested in `SpeedHUDPill` before).
+    private var recDuration: String {
+        let d = driveViewModel.sessionDuration
+        let h = Int(d) / 3600
+        let m = (Int(d) % 3600) / 60
+        let s = Int(d) % 60
+        return String(format: "%02d:%02d:%02d", h, m, s)
+    }
+}
+
+// MARK: - MapPitchToggleButton
+//
+// Tiny white pill rendered directly to the right of the search bar that
+// cycles the user's pin for the MKMapView camera pitch through:
+//   `.auto` → `.forced2D` → `.forced3D` → `.auto` → ...
+//
+// The white-on-black "AUTO / 2D / 3D" label stays readable against any
+// map style. The full 44×44 capsule is the tap area (44×38 in landscape
+// to fit the smaller search bar height).
+//
+// Sits next to the search bar because the native MKMapView pitch toggle
+// is hidden (see `LiveMapView.makeUIView`); without this pill, the
+// user would have no 2D / 3D switch at all.
+fileprivate struct MapPitchToggleButton: View {
+    @EnvironmentObject var driveViewModel: DriveViewModel
+    let isLandscape: Bool
+
+    var body: some View {
+        Button(action: cycle) {
+            Text(driveViewModel.mapPitchMode.shortLabel)
+                .font(.system(size: isLandscape ? 11 : 12, weight: .black, design: .rounded))
+                .foregroundColor(.black)
+                .frame(width: isLandscape ? 38 : 44, height: isLandscape ? 38 : 44)
+                .liquidGlassChip(cornerRadius: 10, tint: Color.white.opacity(0.40), interactive: true)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .accessibilityLabel("Camera pitch: \(driveViewModel.mapPitchMode.shortLabel). Tap to cycle 2D, 3D, auto.")
+    }
+
+    private func cycle() {
+        UISelectionFeedbackGenerator().selectionChanged()
+        let all = DriveViewModel.MapPitchMode.allCases
+        let idx = all.firstIndex(of: driveViewModel.mapPitchMode) ?? 0
+        let next = all[(idx + 1) % all.count]
+        driveViewModel.mapPitchMode = next
+        DebugLogger.shared.log("MapPitch: \(next.rawValue)")
+    }
+}
+
+fileprivate struct LimitSignView: View {
+    let limit: Int
+    let source: String
+    let isLandscape: Bool
+    /// User tapped the sign -> fire DriveViewModel.manualRefetchSpeedLimit().
+    /// Passed as a closure so LimitSignView doesn't need an @EnvironmentObject
+    /// chain (the parent already holds driveViewModel).
+    let onTap: () -> Void
+    /// True while a tap-driven refetch is in flight. Drives a subtle
+    /// scale pulse so the user immediately sees their tap landed even
+    /// when the fetched answer matches the old one.
+    let isRefreshing: Bool
+
+    var body: some View {
+        Button(action: onTap) {
+            VStack(spacing: 4) {
+                // US MUTCD R2-1 regulatory sign — white face, thick black
+                // border, "SPEED LIMIT" caption and a dominant black numeral.
+                // Rendering goes through the one shared UIKit renderer
+                // (CarPlayUI.speedLimitSign) so the phone HUD and the CarPlay
+                // limit button are pixel-identical and cannot drift apart.
+                // (Replaces the previous UK/Vienna-style red-ring circle.)
+                let measurementSystem = SpeedFormatting.measurementSystem()
+                let limitUnit = SpeedFormatting.unitLabelShort(measurementSystem: measurementSystem)
+                let limitValue = SpeedFormatting.displayLimit(
+                    forMph: limit,
+                    measurementSystem: measurementSystem
+                )
+                Image(uiImage: CarPlayUI.speedLimitSign(
+                    value: limitValue,
+                    unit: limitUnit,
+                    size: isLandscape ? 52 : 64
+                ))
+                .resizable()
+                .interpolation(.high)
+                .frame(width: isLandscape ? 52 : 64, height: isLandscape ? 52 : 64)
+                .accessibilityLabel("Speed limit sign")
+
+                Text(sourceChip.text)
+                    .font(.system(size: isLandscape ? 8 : 10, weight: .bold))
+                    .foregroundColor(sourceChip.color)
+            }
+        }
+        .buttonStyle(.plain)                  // keep flat aesthetic when not pressed
+        .accessibilityLabel("Speed limit. Tap to refresh.")
+        .scaleEffect(isRefreshing ? 1.06 : 1.0)
+        .animation(.easeOut(duration: 0.25), value: isRefreshing)
+    }
+
+    /// Chip-style label + color for the active speed-limit source.
+    /// Computed property (not `let`) so it stays legal inside `var body`'s @ViewBuilder.
+    /// Keeps the legacy "DB"-keyed color when offline/SQLite is the source, distinguishes
+    /// the two live network paths, and shows an unobtrusive grey when no data is available.
+    private var sourceChip: (text: String, color: Color) {
+        switch source {
+        // Production: hide the HERE source label under the sign so end users
+        // don't see provider names. The code paths that populate `source`
+        // (SpeedLimitDataSource / SpeedLimitService) are unchanged — this
+        // only affects what the HUD renders.
+        case "Batch (HERE)":    return ("--", Color(hex: "#34D38A"))      // warm HERE cache
+        case "Live (HERE)":     return ("--", Color(hex: "#00D4FF"))      // live HERE
+        // Keep legacy-provider names truthful if an older persisted state or
+        // diagnostic path ever reaches the HUD. Hiding them as "--" made it
+        // impossible to explain why a non-HERE answer appeared under the sign.
+        case "Live (Overpass)", "OSM", "OpenStreetMap":
+            return ("OSM", Color(hex: "#74B9FF"))
+        case "Live (ArcGIS)", "ArcGIS":
+            return ("ArcGIS", Color(hex: "#A78BFA"))
+        case "DB", "DB (Recovered)":
+            return ("Local DB", Color(hex: "#A0A0B8"))
+        default:                return ("--", Color(hex: "#8888AA"))         // No Data / unknown
         }
     }
 }
 
-// MARK: - Recording Badge
-
-struct RecordingBadge: View {
-    let duration: TimeInterval
-    @State private var blinking = false
+fileprivate struct MobileSpeedAlertBanner: View {
+    @EnvironmentObject var viewModel: DriveViewModel
 
     var body: some View {
-        HStack(spacing: 4) {
-            Circle()
-                .fill(Color(hex: "#FF3D71"))
-                .frame(width: 6, height: 6)
-                .opacity(blinking ? 1 : 0.3)
-                .animation(.easeInOut(duration: 0.8).repeatForever(), value: blinking)
-                .onAppear { blinking = true }
-            Text("REC \(formattedDuration)")
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                .foregroundColor(Color(hex: "#FF3D71"))
-        }
-    }
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundColor(.white)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("SLOW DOWN")
+                        .font(.system(size: 14, weight: .black))
+                        .foregroundColor(DesignSystem.alertRed)
+                    Text("You are above the speed limit")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.8))
+                }
+                Spacer()
+            }
 
-    private var formattedDuration: String {
-        let h = Int(duration) / 3600
-        let m = (Int(duration) % 3600) / 60
-        let s = Int(duration) % 60
-        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
-        return String(format: "%02d:%02d", m, s)
+            if viewModel.alertEngine.isSnoozed {
+                Text("Alert silenced temporarily")
+                    .font(.caption.bold())
+                    .foregroundColor(DesignSystem.cyan)
+            } else {
+                Button {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    viewModel.alertEngine.snoozeFor(15)
+                } label: {
+                    Label("I Know", systemImage: "hand.raised.slash")
+                        .font(.system(size: 14, weight: .black))
+                        .foregroundColor(DesignSystem.cyan)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(DesignSystem.cyan.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(DesignSystem.cyan.opacity(0.5), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(12)
+        .background(DesignSystem.alertRed.opacity(0.14))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(DesignSystem.alertRed.opacity(0.8), lineWidth: 1.5))
     }
 }
 
-// MARK: - Navigation Info (mini, shown in pill when navigating)
-
-struct NavigationInfoMini: View {
-    @EnvironmentObject var vm: DriveViewModel
-
+fileprivate struct SpeedCameraAlertBanner: View {
+    let camera: SpeedCamera
+    
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(vm.nextManeuverInstruction.isEmpty
-                 ? "Navigating" : vm.nextManeuverInstruction)
-                .font(.system(size: 11, weight: .medium))
+        HStack(spacing: 12) {
+            Image(systemName: "camera.badge.ellipsis")
+                .font(.system(size: 24, weight: .bold))
                 .foregroundColor(.white)
-                .lineLimit(1)
-            if let eta = vm.eta {
-                Text("ETA \(eta, style: .time)")
-                    .font(.system(size: 10))
-                    .foregroundColor(Color(hex: "#8888AA"))
+                .frame(width: 44, height: 44)
+                .background(Circle().fill(Color(hex: "#FF3D71")))
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text("SPEED CAMERA AHEAD")
+                    .font(.system(size: 14, weight: .black))
+                    .foregroundColor(Color(hex: "#FF3D71"))
+                
+                Text(camera.location ?? camera.roadway ?? "Unknown Location")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
             }
+            
+            Spacer()
         }
-        .frame(maxWidth: 120)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .glassStyle(cornerRadius: 16)
     }
 }
 
-// MARK: - Color Extension (hex support)
-// Note: Color(hex:) must already be defined in Color+Theme.swift
-// If not, add it there. Do not duplicate it here.
+fileprivate struct RouteSelectionCard: View {
+    @EnvironmentObject var driveViewModel: DriveViewModel
+
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Text("Select Route")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundColor(.white)
+
+                Spacer()
+
+                Button(action: {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    driveViewModel.isSelectingRoute = false
+                    driveViewModel.availableRoutes = []
+                    driveViewModel.destination = nil
+                }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 24))
+                        .foregroundColor(.white.opacity(0.6))
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 16)
+
+            // SUBTITLE — explains the visual hierarchy to the user so
+            // the picker card and the map's bold/light polyline
+            // treatment agree. ("SUGGESTED" pill mirrors the bold cyan
+            // line on the map; "ALTERNATE" mirrors the muted white
+            // line.)
+            HStack(spacing: 6) {
+                Text("Bold line on map = the recommended route")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.55))
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, -6)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 16) {
+                    ForEach(Array(driveViewModel.availableRoutes.enumerated()), id: \.offset) { index, route in
+                        Button(action: {
+                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                            Task {
+                                await driveViewModel.startNavigation(with: route)
+                            }
+                        }) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                // Tag pill — SUGGESTED on routes[0] (the
+                                // bold one), ALTERNATE on the rest. The
+                                // pill itself is filled cyan on the
+                                // recommended route and outlined on
+                                // alternatives so the picker card
+                                // visually mirrors the bold/light
+                                // polylines on the map. Mirrors the
+                                // same hierarchy so the user's eye
+                                // doesn't have to reconcile two
+                                // conflicting representations.
+                                HStack(spacing: 6) {
+                                    if index == 0 {
+                                        Text("SUGGESTED")
+                                            .font(.system(size: 9, weight: .black))
+                                            .foregroundColor(.black)
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 3)
+                                            .background(DesignSystem.cyan)
+                                            .clipShape(Capsule())
+                                    } else {
+                                        Text("ALTERNATE")
+                                            .font(.system(size: 9, weight: .black))
+                                            .foregroundColor(.white.opacity(0.75))
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 3)
+                                            .overlay(
+                                                Capsule().stroke(Color.white.opacity(0.30), lineWidth: 1)
+                                            )
+                                    }
+                                    Text("Route \(index + 1)")
+                                        .font(.system(size: 13, weight: .bold))
+                                        .foregroundColor(.white.opacity(0.75))
+                                }
+
+                                Text("\(max(1, Int(ceil(route.expectedTravelTime / 60.0)))) min")
+                                    .font(.system(size: 22, weight: .black))
+                                    .foregroundColor(index == 0 ? DesignSystem.cyan : .white)
+
+                                let routeDistance = SpeedFormatting.navigationDistanceMeasurement(
+                                    forMeters: route.distance,
+                                    measurementSystem: SpeedFormatting.measurementSystem()
+                                )
+                                let routeUnit = SpeedFormatting.isMetric(SpeedFormatting.measurementSystem()) ? "km" : "mi"
+                                Text(String(format: "%.1f %@", routeDistance.value, routeUnit))
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundColor(.white.opacity(0.6))
+                            }
+                            .padding(16)
+                            .frame(width: 150, alignment: .leading)
+                            .background(index == 0 ? Color.white.opacity(0.16) : Color.white.opacity(0.08))
+                            .cornerRadius(16)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16)
+                                    .stroke(DesignSystem.cyan.opacity(index == 0 ? 1 : 0), lineWidth: 2)
+                            )
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 16)
+            }
+        }
+        .liquidGlass(cornerRadius: 24, interactive: true)
+    }
+}
+
+// MARK: - Navigation Shortcuts Row
+//
+// One pill button shown under the navigation card while a destination is
+// active. It opens the RouteStopsSheet where the user can add, reorder, or
+// delete intermediate waypoints.
+fileprivate struct NavigationShortcutsRow: View {
+    @EnvironmentObject var driveViewModel: DriveViewModel
+    let destination: MKMapItem
+
+    // The row is intentionally NOT horizontally scrollable.
+    // It once held several shortcut pills and panned side to side on
+    // purpose; with only the single in-app "Add Stops" action left (the
+    // external Apple Maps handoff was removed as redundant), the lone pill
+    // just rubber-banded under the finger. TestFlight 2.3.0 (b653)
+    // feedback (chslmadhuri@gmail.com): "Horizontal to add stops button,
+    // if I swipe, the add stop buttons scrolls side to side. This was on
+    // purpose many features back, but not in use anymore. Remove this."
+    // A plain HStack keeps the button with no pan gesture.
+    var body: some View {
+        // Trailing Spacer pins the pill leading: the overlay VStack uses
+        // default center alignment, and the old full-width scroll container
+        // held this row out to both edges. Without the Spacer the pill
+        // would drift to the horizontal center after losing that container.
+        HStack(spacing: 0) {
+            Button(action: {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                driveViewModel.showRouteStopsSheet = true
+            }) {
+                Label("Add Stops", systemImage: "plus.circle")
+                    .labelStyle(.titleAndIcon)
+                    .font(.system(size: 13, weight: .bold))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .foregroundColor(.white)
+                    .liquidGlassChip(cornerRadius: 18, interactive: true)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 4)
+    }
+}
+
+// MARK: - Nearby Amenities Card
+//
+// Inline list of the most recent MKLocalSearch category results. Tapping a
+// row either reroutes to that MKMapItem or hands it off to Apple Maps.
+fileprivate struct NearbyAmenitiesCard: View {
+    @EnvironmentObject var driveViewModel: DriveViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(driveViewModel.nearbyAmenitiesQuery.uppercased())
+                    .font(.system(size: 11, weight: .black))
+                    .foregroundColor(DesignSystem.cyan)
+                Spacer()
+                Button(action: { driveViewModel.nearbyAmenities = [] }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(.white.opacity(0.6))
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
+
+            ForEach(Array(driveViewModel.nearbyAmenities.prefix(4).enumerated()), id: \.offset) { _, item in
+                Button(action: {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    driveViewModel.openInAppleMaps(item)
+                    // Drop the rest of the list after handing one off to
+                    // Apple Maps so it doesn't float over the map forever.
+                    driveViewModel.nearbyAmenities = []
+                }) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "mappin.circle.fill")
+                            .foregroundColor(DesignSystem.cyan)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.name ?? "Unnamed place")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
+                            if let addr = item.placemark.title {
+                                Text(addr)
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.white.opacity(0.5))
+                                    .lineLimit(1)
+                            }
+                        }
+                        Spacer()
+                        Image(systemName: "arrow.up.right.square")
+                            .foregroundColor(.white.opacity(0.5))
+                            .font(.system(size: 13))
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                }
+                Divider().background(Color.white.opacity(0.1)).padding(.horizontal, 14)
+            }
+
+            Color.clear.frame(height: 8)
+        }
+        .padding(.vertical, 8)
+        .liquidGlassChip(cornerRadius: 18, tint: DesignSystem.cyan.opacity(0.06), interactive: true)
+    }
+}
+
+// MARK: - Offline Data Banner
+// TestFlight 2.1.4 feedback from srihan.yeleswarapu@gmail.com: "if the
+// user has no wifi, show an alert saying please turn on WiFi or
+// cellular data". We surface a non-modal red banner at the top of the
+// driving overlay whenever NWPathMonitor reports the path as !satisfied.
+// The banner animates in / out so brief connectivity flaps don't punch
+// in awkwardly.
+fileprivate struct OfflineDataBanner: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "wifi.exclamationmark")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundColor(.white)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("OFFLINE")
+                    .font(.system(size: 10, weight: .black))
+                    .foregroundColor(.white.opacity(0.75))
+                Text("Turn on Wi-Fi or Cellular Data for fresh speed limits.")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.white)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 4)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity)
+        .background(DesignSystem.alertRed.opacity(0.92))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .shadow(color: DesignSystem.alertRed.opacity(0.5), radius: 8, y: 2)
+    }
+}

@@ -15,19 +15,13 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         
         let window = UIWindow(windowScene: windowScene)
         
-        // Use SwiftData container
-        let container = try? ModelContainer(for: DriveSession.self, SpeedReading.self)
-        
-        let rootView = TabView {
-            DriveRootView()
-                .tabItem { Label("Drive", systemImage: "car.top.door.front.left.open") }
-            AnalyticsDashboardView()
-                .tabItem { Label("Analytics", systemImage: "chart.bar.fill") }
-        }
-        .environmentObject(AppDelegate.sharedDriveViewModel)
-        .modelContainer(container!)
-        .preferredColorScheme(.dark)
-        
+        // Use the shared ModelContainer from AppDelegate - it's already initialized
+        // before this scene connects, ensuring CarPlay and the app share the same context
+        let rootView = AppRootView()
+            .environmentObject(AppDelegate.sharedAppState)
+            .environmentObject(AppDelegate.sharedDriveViewModel)
+            .modelContainer(AppDelegate.sharedModelContainer)
+            .preferredColorScheme(.dark)
         window.rootViewController = UIHostingController(rootView: rootView)
         self.window = window
         window.makeKeyAndVisible()

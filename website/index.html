@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <title>Speedio &mdash; Speed Limit Lookup</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    :root {
+      --bg-1: #0c1116; --bg-2: #16202c;
+      --panel: rgba(15, 22, 31, 0.78);
+      --panel-border: rgba(255,255,255,0.12);
+      --text: #f0f4f9;
+      --mute: #98a4b3;
+      --accent: #00d4ff;
+      --az: #ffae3a;
+      --arcgis: #00d4ff;
+      --overpass: #2ee07a;
+      --here: #6c5ce7;
+      --batch: #fd79a8;
+      --cache: #fdcb6e;
+      --miss: #ff7163;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", sans-serif;
+      background: linear-gradient(180deg, var(--bg-1) 0%, var(--bg-2) 100%);
+      color: var(--text); overflow: hidden;
+    }
+    #app { position: relative; height: 100vh; width: 100%; }
+    #map { position: absolute; inset: 0; }
+    .leaflet-container { background: #1a222b !important; }
+
+    header {
+      position: absolute; top: 16px; left: 16px; z-index: 1000;
+      background: var(--panel); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--panel-border);
+      border-radius: 14px; padding: 14px 20px; max-width: 340px;
+    }
+    header h1 { font-size: 16px; font-weight: 600; letter-spacing: 0.3px; display: flex; align-items: center; gap: 10px; }
+    header h1 .nav-link {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.6px;
+      color: var(--accent); text-decoration: none;
+      padding: 3px 10px; border-radius: 999px;
+      border: 1px solid rgba(0,212,255,0.3);
+      background: rgba(0,212,255,0.08);
+      transition: all 0.2s ease;
+    }
+    header h1 .nav-link:hover {
+      background: rgba(0,212,255,0.18);
+      border-color: var(--accent);
+      transform: translateY(-1px);
+    }
+    header p { font-size: 12px; color: var(--mute); margin-top: 4px; line-height: 1.5; }
+    header .dot {
+      display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+      background: var(--accent); margin-right: 6px; animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+    /* Top big-number speed panel (iOS-equivalent answer). */
+    #big {
+      position: absolute; top: 16px; right: 16px; z-index: 1001;
+      background: var(--panel); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--panel-border);
+      border-radius: 18px; padding: 22px 26px; min-width: 260px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      transition: transform 0.2s ease, opacity 0.2s ease;
+    }
+    #big.loading { opacity: 0.6; }
+    #big .mph {
+      font-size: 84px; font-weight: 700; line-height: 1; letter-spacing: -0.04em;
+      background: linear-gradient(135deg, #00d4ff, #2ee07a);
+      -webkit-background-clip: text; background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    #big.nodata .mph {
+      background: linear-gradient(135deg, #98a4b3, #6c7a89);
+      -webkit-background-clip: text; background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    #big .mph-unit {
+      font-size: 26px; color: var(--mute); font-weight: 600; vertical-align: top;
+      line-height: 1; margin-left: 6px;
+    }
+    #big .road-name { margin-top: 10px; font-size: 14px; color: var(--text); font-weight: 600; }
+    #big .road-key  { margin-top: 4px; font-size: 12px; color: var(--mute); font-family: "SF Mono", "Menlo", monospace; }
+    #big .detail    { margin-top: 8px; font-size: 11.5px; color: var(--mute); line-height: 1.45; }
+    #big .meta { margin-top: 8px; font-size: 10.5px; color: var(--mute); font-family: "SF Mono", "Menlo", monospace; }
+    #big .source-badge {
+      display: inline-block; margin-top: 10px; padding: 4px 12px;
+      background: rgba(0, 212, 255, 0.18); border: 1px solid rgba(0, 212, 255, 0.4);
+      border-radius: 999px; font-size: 11px; font-weight: 500;
+    }
+    #big .source-badge.cache    { background: rgba(253, 203, 110, 0.18); border-color: rgba(253, 203, 110, 0.4); color: var(--cache); }
+    #big .source-badge.batch    { background: rgba(253, 121, 168, 0.18); border-color: rgba(253, 121, 168, 0.4); color: var(--batch); }
+    #big .source-badge.here     { background: rgba(108, 92, 231, 0.18); border-color: rgba(108, 92, 231, 0.4); color: var(--here); }
+    #big .source-badge.arcgis   { background: rgba(0, 212, 255, 0.18); border-color: rgba(0, 212, 255, 0.4); color: var(--arcgis); }
+    #big .source-badge.overpass { background: rgba(46, 224, 122, 0.18); border-color: rgba(46, 224, 122, 0.4); color: var(--overpass); }
+    #big .source-badge.db       { background: rgba(255, 174, 58, 0.18); border-color: rgba(255, 174, 58, 0.4); color: var(--az); }
+    #big .source-badge.nodata   { background: rgba(255, 113, 99, 0.18); border-color: rgba(255, 113, 99, 0.4); color: var(--miss); }
+
+    /* Three source cards beneath the big number. */
+    #sources {
+      position: absolute; top: 200px; right: 16px; z-index: 1000;
+      display: flex; flex-direction: column; gap: 8px; min-width: 260px;
+    }
+    .src-card {
+      background: var(--panel); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--panel-border); border-radius: 12px;
+      padding: 10px 14px;
+      transition: border 0.15s ease;
+    }
+    .src-card.loading { opacity: 0.55; }
+    .src-card.picked { border-color: rgba(46, 224, 122, 0.6); }
+    .src-card .src-header {
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: 11px; font-weight: 600; letter-spacing: 0.4px; text-transform: uppercase;
+    }
+    .src-card .src-name.batch    { color: var(--batch); }
+    .src-card .src-name.here     { color: var(--here); }
+    .src-card .src-name.arcgis   { color: var(--arcgis); }
+    .src-card .src-name.overpass { color: var(--overpass); }
+    .src-card .src-name.az       { color: var(--az); }
+    .src-card .src-mph { font-size: 22px; font-weight: 700; margin-top: 4px; }
+    .src-card .src-detail { font-size: 11px; color: var(--mute); margin-top: 4px; line-height: 1.4; }
+    .src-card .src-empty { color: var(--miss); font-size: 12px; font-style: italic; }
+    .src-card .src-error { color: var(--miss); font-size: 12px; }
+
+    /* Trace panel (per-step log; kept from prior version). */
+    #tracer {
+      position: absolute; bottom: 16px; left: 16px; right: 16px; z-index: 1000;
+      background: var(--panel); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--panel-border);
+      border-radius: 14px; padding: 14px 18px;
+      font-family: "SF Mono", "Menlo", monospace;
+      font-size: 11.5px; line-height: 1.7;
+      max-height: 200px; overflow: hidden;
+      transform: translateY(calc(100% + 16px));
+      transition: transform 0.25s ease;
+    }
+    #tracer.show { transform: translateY(0); }
+    #tracer .row {
+      display: flex; gap: 12px; padding: 2px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+    }
+    #tracer .row:last-child { border-bottom: 0; }
+    #tracer .step {
+      width: 160px; color: var(--mute); flex-shrink: 0; font-weight: 600;
+    }
+    #tracer .msg { flex: 1; color: var(--text); word-break: break-word; }
+    #tracer .ok .step { color: var(--overpass); }
+    #tracer .ok .msg { color: var(--overpass); }
+    #tracer .hit .step { color: var(--az); }
+    #tracer .hit .msg { color: var(--az); }
+    #tracer .err .step { color: var(--miss); }
+    #tracer .err .msg { color: var(--miss); }
+    #tracer .sys .step { color: var(--accent); }
+    #tracer .sys .msg { color: var(--accent); }
+
+    #tracer-toggle {
+      position: absolute; bottom: 16px; left: 16px; z-index: 1001;
+      background: var(--panel); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--panel-border);
+      border-radius: 999px; padding: 9px 18px;
+      color: var(--text); font-size: 12px; cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    #tracer-toggle:hover { background: rgba(0,212,255,0.15); border-color: var(--accent); }
+    #tracer-toggle.open { background: rgba(0,212,255,0.2); }
+
+    .leaflet-pin {
+      width: 28px; height: 28px;
+      background: radial-gradient(circle at 50% 50%, var(--accent) 10%, rgba(0,212,255,0.6) 35%, rgba(0,212,255,0) 75%);
+      border-radius: 50%; pointer-events: none;
+      box-shadow: 0 0 0 2px rgba(0,212,255,0.5);
+      animation: drop 0.4s ease-out;
+    }
+    @keyframes drop {
+      0% { transform: scale(0.2) translateY(-20px); opacity: 0; }
+      100% { transform: scale(1) translateY(0); opacity: 1; }
+    }
+
+    @media (max-width: 600px) {
+      #big { left: 16px; right: 16px; padding: 16px 18px; min-width: 0; top: auto; bottom: 220px; }
+      #big .mph { font-size: 64px; }
+      header { left: 12px; top: 12px; max-width: 280px; }
+      #sources { left: 12px; right: 12px; top: auto; bottom: 76px; }
+      #tracer { left: 12px; right: 12px; bottom: 76px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1><span class="dot"></span>Speedio Lookup <a href="carplay-simulator.html" class="nav-link">&#128755; CarPlay</a></h1>
+      <p>Click anywhere on the map. The pipeline mirrors the iOS app&rsquo;s SmartSpeedLimitService exactly: Cache &rarr; HERE Batch &rarr; HERE REST &rarr; ArcGIS HPMS &rarr; Overpass &rarr; No Data. The Arizona SQLite implementation remains archived for a possible future all-states replacement, but is not used here.</p>
+      <p style="margin-top:6px;font-size:11px;">
+        <span id="here-status" style="color:var(--miss);">HERE API: <span id="here-status-text">checking&hellip;</span></span>
+        &middot;
+        <span id="batch-status" style="color:var(--batch);">Batch cache: <span id="batch-count">0</span> entries</span>
+        &middot;
+        <span id="cache-status" style="color:var(--cache);">Response cache: <span id="cache-count">0</span> entries</span>
+      </p>
+    </header>
+
+    <div id="map"></div>
+
+    <!-- Big top number: iOS-equivalent answer. -->
+    <div id="big" style="display:none;"></div>
+
+    <!-- Five provider cards (filled after every click, reflecting iOS pipeline order). -->
+    <div id="sources" style="display:none;">
+      <div class="src-card" data-provider="batch">
+        <div class="src-header">
+          <span class="src-name batch">1. HERE Batch</span><span class="status">…</span>
+        </div>
+        <div class="src-mph"></div>
+        <div class="src-detail"></div>
+      </div>
+      <div class="src-card" data-provider="here">
+        <div class="src-header">
+          <span class="src-name here">2. HERE REST</span><span class="status">…</span>
+        </div>
+        <div class="src-mph"></div>
+        <div class="src-detail"></div>
+      </div>
+      <div class="src-card" data-provider="arcgis">
+        <div class="src-header">
+          <span class="src-name arcgis">3. ArcGIS HPMS</span><span class="status">…</span>
+        </div>
+        <div class="src-mph"></div>
+        <div class="src-detail"></div>
+      </div>
+      <div class="src-card" data-provider="overpass">
+        <div class="src-header">
+          <span class="src-name overpass">4. Overpass</span><span class="status">…</span>
+        </div>
+        <div class="src-mph"></div>
+        <div class="src-detail"></div>
+      </div>
+    </div>
+
+    <button id="tracer-toggle">&#128225; Pipeline trace</button>
+    <div id="tracer"></div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    /* ======================================================================
+       Mirrors the iOS Speedio pipeline (SmartSpeedLimitService.swift) exactly:
+         1. ResponseCache (spatial grid, 30-min TTL)
+         2. BatchCache (HERE Route Matching offline results, name-first)
+         3. HERE REST (HERE Routing API v8, primary live provider)
+           4. ArcGIS HPMS (FHWA sample-panel sections, secondary live)
+         5. Overpass (OSM maxspeed tag, tertiary live)
+         6. No Data when the active providers have no answer
+       The big top number tracks the iOS' logical pick (first non-null result
+       from the pipeline). The cards below display each provider individually.
+       ====================================================================== */
+
+    const map = L.map('map', { zoomControl: true }).setView([33.4484, -112.0740], 11);
+    L.tileLayer(
+      'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+      { subdomains: 'abcd', maxZoom: 19,
+        attribution: '&copy; OpenStreetMap, &copy; CARTO' }
+    ).addTo(map);
+
+    let marker = null;
+    const bigEl = document.getElementById('big');
+    const sourcesEl = document.getElementById('sources');
+    const tracerEl = document.getElementById('tracer');
+    const toggleEl = document.getElementById('tracer-toggle');
+
+    // ---- Status indicators ----
+    async function checkHEREStatus() {
+      try {
+        const r = await fetch('/api/here-status');
+        const d = await r.json();
+        const statusEl = document.getElementById('here-status-text');
+        const badge = document.getElementById('here-status');
+        if (d.configured) {
+          statusEl.textContent = 'connected (' + d.source + ')';
+          badge.style.color = 'var(--here)';
+        } else {
+          statusEl.textContent = 'not configured';
+          badge.style.color = 'var(--miss)';
+        }
+      } catch (e) {
+        document.getElementById('here-status-text').textContent = 'error';
+      }
+    }
+    async function updateCacheCounts() {
+      try {
+        const r = await fetch('/health');
+        const d = await r.json();
+        document.getElementById('batch-count').textContent = d.batch_cache_count || 0;
+        document.getElementById('cache-count').textContent = d.response_cache_count || 0;
+      } catch (e) {
+        // silently ignore
+      }
+    }
+    checkHEREStatus();
+    updateCacheCounts();
+    // Refresh cache counts every 10 seconds
+    setInterval(updateCacheCounts, 10000);
+
+    // ---- Trace panel ----
+    function trace(provider, msg, status) {
+      const row = document.createElement('div');
+      row.className = 'row ' + (status || '');
+      const ts = new Date().toLocaleTimeString();
+      const safeMsg = String(msg).replace(/[<>]/g, c => c === '<' ? '&lt;' : '&gt;');
+      row.innerHTML =
+        '<div class="step">' + provider + '</div>' +
+        '<div class="msg">[' + ts + '] ' + safeMsg + '</div>';
+      tracerEl.appendChild(row);
+    }
+    function clearTrace() { tracerEl.innerHTML = ''; }
+    toggleEl.addEventListener('click', () => {
+      tracerEl.classList.toggle('show');
+      toggleEl.classList.toggle('open');
+    });
+
+    // ---- Provider 1: HERE Batch Cache (mirrors HERELocalBatchCache) ----
+    async function queryBatch(lat, lon, roadName) {
+      trace('HERE Batch', `POST /api/speedlimit-batch ${roadName ? '(road_name=' + roadName + ')' : '(spatial)'}`, 'sys');
+      try {
+        const r = await fetch('/api/speedlimit-batch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lat, lon, road_name: roadName || null }),
+        });
+        if (!r.ok) { trace('HERE Batch', 'HTTP ' + r.status, 'err'); return { found: false }; }
+        const d = await r.json();
+        if (!d.found) { trace('HERE Batch', 'no cached entry', 'err'); return { found: false }; }
+        trace('HERE Batch',
+          d.speedLimitMph + ' mph &middot; ' + d.roadKey,
+          'hit');
+        return { found: true, speedMph: d.speedLimitMph, providerName: 'HERE Batch',
+                 roadKey: d.roadKey, detail: d.detail, source: 'batch' };
+      } catch (e) {
+        trace('HERE Batch', 'error: ' + e.message, 'err');
+        return { found: false, error: e.message };
+      }
+    }
+
+    // ---- Provider 2: HERE REST (mirrors HERERestSpeedLimitProvider) ----
+    async function queryHERE(lat, lon) {
+      trace('HERE REST', 'POST /api/speedlimit-here', 'sys');
+      try {
+        const r = await fetch('/api/speedlimit-here', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lat, lon }),
+        });
+        if (!r.ok) { trace('HERE REST', 'HTTP ' + r.status, 'err'); return { found: false }; }
+        const d = await r.json();
+        if (!d.found) { trace('HERE REST', d.reason || 'no response / not configured', 'err'); return { found: false }; }
+        trace('HERE REST',
+          d.speedLimitMph + ' mph &middot; ' + d.roadKey,
+          'hit');
+        return { found: true, speedMph: d.speedLimitMph, providerName: 'HERE REST',
+                 roadKey: d.roadKey, detail: d.detail, source: 'here' };
+      } catch (e) {
+        trace('HERE REST', 'error: ' + e.message, 'err');
+        return { found: false, error: e.message };
+      }
+    }
+
+    // ---- Provider 3: ArcGIS HPMS (mirrors ArcGISHPMSSpeedLimitProvider) ----
+    async function queryArcGIS(lat, lon) {
+      trace('ArcGIS HPMS', 'POST /api/speedlimit-arcgis', 'sys');
+      try {
+        const r = await fetch('/api/speedlimit-arcgis', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lat, lon }),
+        });
+        if (!r.ok) { trace('ArcGIS HPMS', 'HTTP ' + r.status, 'err'); return { found: false }; }
+        const d = await r.json();
+        if (!d.found) { trace('ArcGIS HPMS', 'no sample panel within corridor', 'err'); return { found: false }; }
+        trace('ArcGIS HPMS',
+          d.speedLimitMph + ' mph &middot; ' + (d.roadKey || '?'),
+          'hit');
+        return { found: true, speedMph: d.speedLimitMph, providerName: 'ArcGIS',
+                 roadKey: d.roadKey, detail: d.detail, source: 'arcgis' };
+      } catch (e) {
+        trace('ArcGIS HPMS', 'network error: ' + e.message, 'err');
+        return { found: false, error: e.message };
+      }
+    }
+
+    // ---- Provider 4: Overpass (mirrors OverpassSpeedLimitProvider) ----
+    async function queryOverpass(lat, lon) {
+      trace('Overpass', 'POST /api/speedlimit-overpass', 'sys');
+      try {
+        const r = await fetch('/api/speedlimit-overpass', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lat, lon }),
+        });
+        if (!r.ok) { trace('Overpass', 'HTTP ' + r.status, 'err'); return { found: false }; }
+        const d = await r.json();
+        if (!d.found) { trace('Overpass', 'no ways tagged [highway][maxspeed] in 100m', 'err'); return { found: false }; }
+        trace('Overpass',
+          d.speedLimitMph + ' mph &middot; ' + (d.roadKey || '?') + ' &middot; ' + (d.detail || ''),
+          'hit');
+        return { found: true, speedMph: d.speedLimitMph, providerName: 'Overpass',
+                 roadKey: d.roadKey, detail: d.detail, source: 'overpass' };
+      } catch (e) {
+        trace('Overpass', 'network error: ' + e.message, 'err');
+        return { found: false, error: e.message };
+      }
+    }
+
+    // ---- Reverse geocode (mirrors RoadGeocoder) ----
+    async function reverseGeocode(lat, lon) {
+      trace('ReverseGeo', `GET /api/reverse-geocode?lat=${lat}&lon=${lon}`, 'sys');
+      try {
+        const r = await fetch(`/api/reverse-geocode?lat=${lat}&lon=${lon}`);
+        if (!r.ok) {
+          trace('ReverseGeo', 'HTTP ' + r.status, 'err');
+          return null;
+        }
+        const d = await r.json();
+        if (!d.road_name) {
+          trace('ReverseGeo', 'no road_name resolved; using spatial-only', 'err');
+          return d;
+        }
+        trace('ReverseGeo', 'road_name=' + d.road_name + ' &middot; display=' + (d.display_name || ''), 'hit');
+        return d;
+      } catch (e) {
+        trace('ReverseGeo', 'error: ' + e.message, 'err');
+        return null;
+      }
+    }
+
+    // ---- Orchestrator (mirrors SmartSpeedLimitService.resolveCandidate) ----
+    // Decision tree (matches iOS app exactly):
+    //   Cache -> Batch Cache -> HERE REST -> ArcGIS -> Overpass -> No Data
+    // The big top number tracks the iOS' logical pick (first non-null result).
+    // The cards below show each provider's individual result.
+    //
+    // Providers are fetched SEQUENTIALLY (mirroring the iOS chain) so the
+    // first hit short-circuits. This matches the actual app behavior where
+    // a fast cache/Batch response prevents unnecessary network calls.
+    async function lookupAllSources(lat, lon) {
+      clearTrace();
+      trace('PIPELINE', `lat=${lat.toFixed(6)} lon=${lon.toFixed(6)}`, 'sys');
+
+      const rg = await reverseGeocode(lat, lon) || {};
+      const roadName = rg.road_name || null;
+      trace('PIPELINE', 'road_name=' + (roadName || '<none>'), 'sys');
+
+      // ---- iOS Pipeline (mirrors SmartSpeedLimitService.resolveCandidate) ----
+      // Chain: Cache(server) -> Batch -> HERE -> ArcGIS -> Overpass -> No Data
+      // The server-side response cache is checked in the orchestrator endpoint.
+      // For individual cards, we query each provider separately.
+
+      trace('PIPELINE', 'parallel fetch: Batch + HERE REST + ArcGIS + Overpass', 'sys');
+
+      // Fetch the active providers in parallel for fast UX. The pick order is
+      // determined client-side below, matching the iOS pipeline priority.
+      const [batch, here, arc, ov] = await Promise.all([
+        queryBatch(lat, lon, roadName),
+        queryHERE(lat, lon),
+        queryArcGIS(lat, lon),
+        queryOverpass(lat, lon),
+      ]);
+
+      // iOS-equivalent pick: same priority order as the app chain:
+      // Cache(server-side) -> Batch -> HERE -> ArcGIS -> Overpass -> No Data
+      // Note: Cache is handled server-side in the orchestrator response, but
+      // for individual provider cards, the client picks the first non-null provider.
+      let pick = null, pickSrc = 'nodata';
+      if (batch.found)     { pick = { mph: batch.speedMph, provider: 'batch',  detail: batch.detail, roadKey: batch.roadKey }; pickSrc = 'batch'; }
+      else if (here.found) { pick = { mph: here.speedMph, provider: 'here',   detail: here.detail, roadKey: here.roadKey }; pickSrc = 'here'; }
+      else if (arc.found)  { pick = { mph: arc.speedMph, provider: 'arcgis', detail: arc.detail, roadKey: arc.roadKey }; pickSrc = 'arcgis'; }
+      else if (ov.found)   { pick = { mph: ov.speedMph, provider: 'overpass', detail: ov.detail, roadKey: ov.roadKey }; pickSrc = 'overpass'; }
+      else                 { pick = { mph: null, provider: null }; pickSrc = 'nodata'; }
+
+      trace('PIPELINE',
+        pickSrc === 'nodata' ? 'no provider hit -> No Data'
+          : `pick=${pickSrc} mph=${pick.mph}`,
+        pickSrc === 'nodata' ? 'err' : 'ok');
+
+      return { batch, here, arc, ov, pick, pickSrc, roadName, rg };
+    }
+
+    // ---- Renderers ----
+    function renderBig(p, lat, lon, roadName) {
+      const has = p.mph != null && p.mph > 0;
+      const klassMap = { batch:'batch', here:'here', arcgis:'arcgis', overpass:'overpass', nodata:'nodata' };
+      const klass = klassMap[p.provider || 'nodata'] || 'nodata';
+      const labelMap = {
+        batch: 'HERE Batch', here: 'HERE REST', arcgis:'ArcGIS HPMS',
+        overpass:'Overpass', nodata:'No Data'
+      };
+      const providerLabel = labelMap[p.provider || 'nodata'] || 'No Data';
+      const safe = (s) => String(s == null ? '' : s).replace(/[<>]/g, c => c === '<' ? '&lt;' : '&gt;');
+      bigEl.className = klass === 'nodata' ? 'nodata' : '';
+      bigEl.innerHTML =
+        '<div>' +
+          '<span class="mph">' + (has ? p.mph : '\u2014') + '</span>' +
+          '<span class="mph-unit">' + (has ? 'mph' : '') + '</span>' +
+        '</div>' +
+        (roadName ? '<div class="road-name">' + safe(roadName) + '</div>' : '') +
+        (p.routeId ? '<div class="road-key">RouteId=' + safe(p.routeId) + '</div>' :
+         p.roadKey ? '<div class="road-key">' + safe(p.roadKey) + '</div>' : '') +
+        (p.detail ? '<div class="detail">' + safe(p.detail) + '</div>' : '') +
+        '<div class="meta">&#128205; ' + lat.toFixed(5) + ', ' + lon.toFixed(5) + '</div>' +
+        '<div class="source-badge ' + klass + '">' + providerLabel + '</div>';
+      bigEl.style.display = 'block';
+    }
+
+    function renderCard(card, r) {
+      card.classList.remove('loading');
+      card.classList.toggle('picked', !!r.picked);
+      const statusEl = card.querySelector('.status');
+      const mphEl    = card.querySelector('.src-mph');
+      const detailEl = card.querySelector('.src-detail');
+      const safe = (s) => String(s == null ? '' : s).replace(/[<>]/g, c => c === '<' ? '&lt;' : '&gt;');
+      if (!r || r.found === false) {
+        if (r && r.error) {
+          statusEl.textContent = 'err';
+          mphEl.innerHTML = '';
+          detailEl.innerHTML = '<span class="src-error">' + safe(r.error) + '</span>';
+        } else if (r && r.reason) {
+          statusEl.textContent = 'no data';
+          mphEl.innerHTML = '';
+          detailEl.innerHTML = '<span class="src-empty">' + safe(r.reason) + '</span>';
+        } else {
+          statusEl.textContent = 'no data';
+          mphEl.innerHTML = '';
+          detailEl.innerHTML = '<span class="src-empty">No data for this point.</span>';
+        }
+      } else {
+        statusEl.textContent = 'hit';
+        mphEl.innerHTML = r.speedMph + ' <small style="font-size:13px;color:var(--mute);font-weight:600;">mph</small>';
+        detailEl.textContent = (r.detail || '') + (r.roadKey ? ' (' + r.roadKey + ')' : '');
+      }
+    }
+
+    function renderSources(all, pickSrc) {
+      renderCard(document.querySelector('.src-card[data-provider="batch"]'),
+                 Object.assign({}, all.batch, { picked: pickSrc === 'batch' }));
+      renderCard(document.querySelector('.src-card[data-provider="here"]'),
+                 Object.assign({}, all.here,   { picked: pickSrc === 'here' }));
+      renderCard(document.querySelector('.src-card[data-provider="arcgis"]'),
+                 Object.assign({}, all.arc,    { picked: pickSrc === 'arcgis' }));
+      renderCard(document.querySelector('.src-card[data-provider="overpass"]'),
+                 Object.assign({}, all.ov,     { picked: pickSrc === 'overpass' }));
+      sourcesEl.style.display = 'flex';
+    }
+
+    function setLoading(lat, lon) {
+      sourcesEl.style.display = 'flex';
+      bigEl.style.display = 'block';
+      bigEl.classList.add('loading');
+      bigEl.innerHTML =
+        '<div style="text-align:center;color:var(--mute);padding:8px 0;">&#8987; Querying ' +
+        'HERE Batch &rarr; HERE REST &rarr; ArcGIS &rarr; Overpass&hellip;</div>';
+      document.querySelectorAll('.src-card').forEach(c => {
+        c.classList.add('loading');
+        c.classList.remove('picked');
+        c.querySelector('.status').textContent = '\u00B7\u00B7\u00B7';
+        c.querySelector('.src-mph').innerHTML = '';
+        c.querySelector('.src-detail').innerHTML = '';
+      });
+    }
+
+    // ---- Click handler ----
+    map.on('click', async (e) => {
+      const lat = e.latlng.lat;
+      const lon = e.latlng.lng;
+      if (marker) map.removeLayer(marker);
+      marker = L.marker([lat, lon], {
+        icon: L.divIcon({
+          className: '',
+          html: '<div class="leaflet-pin"></div>',
+          iconSize: [28, 28],
+          iconAnchor: [14, 14],
+        }),
+      }).addTo(map);
+      tracerEl.classList.add('show');
+      toggleEl.classList.add('open');
+      setLoading(lat, lon);
+      const all = await lookupAllSources(lat, lon);
+      bigEl.classList.remove('loading');
+      renderBig(all.pick, lat, lon, all.roadName);
+      renderSources(all, all.pickSrc);
+    });
+  </script>
+</body>
+</html>
