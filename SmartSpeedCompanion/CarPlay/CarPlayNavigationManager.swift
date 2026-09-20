@@ -139,14 +139,18 @@ public class CarPlayNavigationManager: NSObject, NavigationActionDelegate {
 
     /// Defensive cleanup in case `finishCurrentSession()` was not called
     /// before deallocation (crash path, unexpected teardown order).
-    /// deinit runs in a nonisolated context, so it must not call the
-    /// MainActor-isolated `CPNavigationSession.finishTrip()`; cancelling the
-    /// subscriptions stops the data flow, and the sessions themselves are
+    ///
+    /// deinit is nonisolated, so it cannot touch MainActor-isolated state
+    /// statically. @MainActor objects here are always deallocated on the
+    /// main thread, which `assumeIsolated` asserts before cancelling the
+    /// subscriptions (`cancel()` itself is thread-safe). The sessions are
     /// finished on the main actor by the normal teardown paths
     /// (`finishCurrentSession()` / CarPlay scene disconnect).
     deinit {
-        estimateCancellable?.cancel()
-        idleStateCancellable?.cancel()
+        MainActor.assumeIsolated {
+            estimateCancellable?.cancel()
+            idleStateCancellable?.cancel()
+        }
     }
 
     // MARK: - Session Without Navigation
