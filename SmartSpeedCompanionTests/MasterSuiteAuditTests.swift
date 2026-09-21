@@ -108,9 +108,9 @@ final class MasterSuiteAuditTests: XCTestCase {
         let banned = ["URLSession", "dataTask", "URLRequest", "MKLocalSearch"]
         var violations: [String] = []
         for file in allSwiftFiles
-        where !supportFileNames.contains(file.lastPathComponent),
-              file.lastPathComponent != "MasterSuiteAuditTests.swift",
-              !file.lastPathComponent.hasPrefix("HERELive") {
+        where !supportFileNames.contains(file.lastPathComponent)
+              && file.lastPathComponent != "MasterSuiteAuditTests.swift"
+              && !file.lastPathComponent.hasPrefix("HERELive") {
             let source = try String(contentsOf: file, encoding: .utf8)
             for token in banned where source.contains(token) {
                 violations.append("\(file.lastPathComponent) references '\(token)'")

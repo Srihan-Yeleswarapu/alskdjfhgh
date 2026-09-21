@@ -59,7 +59,7 @@ final class SpeedEngineSurfacePurityTests: XCTestCase {
     // MARK: - Randomized drive storm
 
     func testRandomFixStormKeepsSurfaceInvariants() {
-        var rng = SeededRandom(seed: 0x5PEED)
+        var rng = SeededRandom(seed: 0x5EED)
         let engine = makeEngine()
         var coord = CLLocationCoordinate2D(latitude: 33.3062, longitude: -111.8412)
         var t = Date(timeIntervalSince1970: 1_700_000_000)
