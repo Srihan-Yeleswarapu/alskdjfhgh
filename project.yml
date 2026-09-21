@@ -380,6 +380,28 @@ targets:
         # standalone app and rejects the submission.
         SKIP_INSTALL: true
 
+  # ── Unit Test Target ──────────────────────────────────────────────
+  # Local-only: `xcodebuild test` on the operator's Mac. The GitHub
+  # workflows (build.yml / distribute.yml) never invoke the test action,
+  # so this target cannot run in CI.
+  SmartSpeedCompanionTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "18.4"
+
+    sources:
+      - path: SmartSpeedCompanionTests
+
+    dependencies:
+      - target: SmartSpeedCompanion
+
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.speedsense.app.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
+
 schemes:
   SmartSpeedCompanion:
     build:
@@ -390,3 +412,7 @@ schemes:
       config: Debug
     archive:
       config: Release
+    test:
+      config: Debug
+      targets:
+        - SmartSpeedCompanionTests
