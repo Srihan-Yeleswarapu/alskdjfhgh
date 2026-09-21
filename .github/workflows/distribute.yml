@@ -8,7 +8,7 @@ on:
 jobs:
   distribute:
     name: Build and Release Signed IPA
-    runs-on: macos-26
+    runs-on: xcode-27   # macOS 27-based image (Xcode 27.0 default)
     timeout-minutes: 90
 
     steps:
@@ -18,10 +18,12 @@ jobs:
           fetch-depth: 0   # full history so `git rev-list --count HEAD` returns an accurate build number
 
       - name: Select Xcode
-        # Prefer Xcode 26.6 (matches project.yml `xcodeVersion: "26.6"`),
-        # falling back to any Xcode 26.x point release. macos-26 today ships
-        # 26.0.1 .. 26.6. Anything older (e.g. a straggler Xcode_16.2.app)
-        # is explicitly rejected so the build is reproducible.
+        # The `xcode-27` image runs on macOS 27 and ships Xcode 27.0 as
+        # its default developer directory (26.x point releases remain
+        # installed for compatibility). Prefer whatever is already
+        # active — Xcode 27.0 on this image — and fall back to the newest
+        # installed Xcode*.app otherwise. `sort -V` ranks 27.x ahead of
+        # 26.x, so a future image bump keeps working without edits here.
         run: |
           XCODE_PATH=$(xcode-select -p 2>/dev/null || true)
           if [ -n "$XCODE_PATH" ] && [ -x "$XCODE_PATH/usr/bin/xcodebuild" ]; then
@@ -680,8 +682,8 @@ jobs:
           echo "=== Repackaging via ditto (Apple-approved for signed IPAs) ==="
           TMP_IPA="$PWD/IPAWork/Speedio-repacked.ipa"
           rm -f "$TMP_IPA"
-          # `--sequesterRsrcAndKeepParent` is NOT a recognized ditto flag on the
-          # macOS 26 runner we use -- a prior iteration of this script shipped with
+          # `--sequesterRsrcAndKeepParent` is NOT a recognized ditto flag on
+          # current macOS runners -- a prior iteration of this script shipped with
           # that flag and the entire repack step exited non-zero before altool ran.
           # The valid flags are `--sequesterRsrc` (store resource forks as AppleDouble)
           # and `--keepParent` (preserve parent directory in archive layout). Both
