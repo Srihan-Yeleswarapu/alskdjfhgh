@@ -141,39 +141,54 @@ enum CarPlayUI {
     /// face, black border, black caption + numeral. US signs are
     /// black-on-white with no red ring — the red-ring circle is the
     /// Vienna/UK convention the HUD previously used.
-    private static let signBlack = UIColor(red: 0.06, green: 0.06, blue: 0.06, alpha: 1)
+    private static let signBlack = UIColor(red: 0.05, green: 0.05, blue: 0.05, alpha: 1)
     private static let signWhite = UIColor(red: 0.99, green: 0.99, blue: 0.98, alpha: 1)
+
+    /// Aspect of the standard R2-1 blank: an 18" × 24" panel, so the drawn
+    /// sign is PORTRAIT — height = 4/3 × width. The earlier renderer drew a
+    /// square, which crushed the SPEED LIMIT stack and starved the numeral;
+    /// the real sign (and the product reference) is taller than wide.
+    static let signAspect: CGFloat = 4.0 / 3.0
 
     /// Draws the US-style speed-limit sign at any size. Both the phone HUD
     /// (`LimitSignView`) and the CarPlay limit button render through this
     /// single function so the two surfaces can never drift apart.
     ///
-    /// Geometry follows MUTCD R2-1 proportions adapted to a square canvas:
-    /// ~12% corner rounding, a white rim OUTSIDE a ~5%-of-width black border
-    /// (like the stamped aluminum blank), and a SPEED / LIMIT + numeral stack
-    /// centered as one block so the face is never top- or bottom-heavy.
+    /// `size` is the sign's WIDTH in points; the returned image measures
+    /// `size` × `size * signAspect` (portrait, per the 18×24 blank).
+    ///
+    /// Geometry matches the MUTCD R2-1 blank (proportions measured off the
+    /// product reference, as fractions of sign width): ~4.5% corner
+    /// rounding, a ~3.5%-of-width black border sitting at the panel edge,
+    /// and a vertically centered SPEED / LIMIT + numeral stack whose
+    /// caption ink is ~17.5% of width and whose numeral ink fills ~48% of
+    /// width — the dominant numeral is what makes the sign read correctly
+    /// at HUD sizes. Numerals wider than ~80% of the sign width (3-digit
+    /// limits) are scaled down to fit, mirroring how real blanks widen
+    /// the panel instead.
     static func speedLimitSign(value: Int?, unit: String?, size: CGFloat) -> UIImage {
-        let size = max(24, size)
+        let width = max(24, size)
+        let height = width * signAspect
         let format = UIGraphicsImageRendererFormat.default()
         format.opaque = false
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: size, height: size), format: format)
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: width, height: height), format: format)
         return renderer.image { _ in
-            let rect = CGRect(x: 0, y: 0, width: size, height: size)
-            let cornerRadius = size * 0.12
+            let rect = CGRect(x: 0, y: 0, width: width, height: height)
+            let cornerRadius = width * 0.045
 
-            // White face, then the black regulatory border inset from the
-            // edge so a thin white rim stays visible outside it — exactly
-            // like the real R2-1 blank. The stroke is centered on its path,
-            // so inset by rim + half the border width.
-            let rim = size * 0.045
-            let borderWidth = size * 0.05
+            // White face, then the black regulatory border right at the
+            // panel edge (a hairline white rim keeps the anti-aliased
+            // corners clean, matching the real blank). The stroke is
+            // centered on its path, so inset by rim + half the border.
+            let rim = width * 0.015
+            let borderWidth = width * 0.036
             signWhite.setFill()
             UIBezierPath(roundedRect: rect, cornerRadius: cornerRadius).fill()
             signBlack.setStroke()
             let borderInset = rim + borderWidth / 2
             let border = UIBezierPath(
                 roundedRect: rect.insetBy(dx: borderInset, dy: borderInset),
-                cornerRadius: cornerRadius * 0.82
+                cornerRadius: cornerRadius * 0.85
             )
             border.lineWidth = borderWidth
             border.stroke()
@@ -195,27 +210,73 @@ enum CarPlayUI {
             // line is placed by its capHeight (the actual black glyph area),
             // via CoreText baseline positioning. This keeps the stack truly
             // centered regardless of font line-height padding quirks.
-            let captionKern = size * 0.015
-            let captionFont = UIFont.systemFont(ofSize: size * 0.155, weight: .heavy)
-            let numeralFont = UIFont.systemFont(ofSize: showUnit ? size * 0.34 : size * 0.44, weight: .black)
-            let unitFont = UIFont.systemFont(ofSize: size * 0.105, weight: .heavy)
+            //
+            // Ink targets come from the R2-1 reference (fractions of WIDTH):
+            // captions 17.5%, numeral 47.5% (36% when the km/h unit shows).
+            // Point sizes are DERIVED from the font's measured cap-height
+            // ratio so the ink heights stay exact even if Apple tunes SF's
+            // metrics.
+            func fontForInk(_ ink: CGFloat, weight: UIFont.Weight) -> UIFont {
+                let probe = UIFont.systemFont(ofSize: 100, weight: weight)
+                let capRatio = probe.capHeight / 100
+                return UIFont.systemFont(ofSize: ink / capRatio, weight: weight)
+            }
+            let captionInkTarget = width * 0.175
+            let numeralInkTarget = showUnit ? width * 0.36 : width * 0.475
+            let unitInkTarget = width * 0.105
+            let captionKern = width * 0.015
+            let captionFont = fontForInk(captionInkTarget, weight: .heavy)
+            let unitFont = fontForInk(unitInkTarget, weight: .heavy)
+
+            // The numeral is sized by ink HEIGHT first, then fitted by WIDTH:
+            // two digits at the reference size nearly fill the face, so a
+            // 3-digit limit (100–120 km/h) would overflow the border. Real
+            // R2-1 blanks solve that by switching to a wider panel (24×30);
+            // a fixed-aspect image shrinks the point size instead so the
+            // ink never exceeds ~84% of the sign width — just above the
+            // reference blank's own two-digit numeral (~79.6%W) so normal
+            // limits render at exact reference size, while 3-digit values
+            // (~1.2×W wide) still scale down to fit.
+            func inkAdvanceWidth(_ text: String, font: UIFont) -> CGFloat {
+                let line = CTLineCreateWithAttributedString(
+                    NSAttributedString(string: text, attributes: [.font: font])
+                )
+                return CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+            }
+            let numeralFont0 = fontForInk(numeralInkTarget, weight: .black)
+            let maxNumeralInkWidth = width * 0.84
+            let rawNumeralWidth = inkAdvanceWidth(numeral, font: numeralFont0)
+            let numeralFont: UIFont
+            if rawNumeralWidth > maxNumeralInkWidth, rawNumeralWidth > 0 {
+                numeralFont = UIFont.systemFont(
+                    ofSize: numeralFont0.pointSize * maxNumeralInkWidth / rawNumeralWidth,
+                    weight: .black
+                )
+            } else {
+                numeralFont = numeralFont0
+            }
 
             let captionInk = captionFont.capHeight
             let numeralInk = numeralFont.capHeight
             let unitInk = unitFont.capHeight
-            let captionGap = size * 0.020   // SPEED ↔ LIMIT
-            let numeralGap = size * 0.032   // LIMIT ↔ numeral
-            let unitGap = showUnit ? size * 0.012 : 0
+            let captionGap = width * 0.112   // SPEED ↔ LIMIT (measured ~11%W)
+            let numeralGap = width * 0.104   // LIMIT ↔ numeral (measured ~10.5%W)
+            let unitGap = showUnit ? width * 0.025 : 0
 
+            // The stack is centered in the face region BETWEEN the top and
+            // bottom borders (border spans rim..rim+borderWidth from each
+            // edge), matching how the reference blank distributes its text.
             let stackHeight = captionInk + captionGap + captionInk
                 + numeralGap + numeralInk + unitGap + (showUnit ? unitInk : 0)
-            let stackTop = (size - stackHeight) / 2
+            let faceTop = rim + borderWidth
+            let faceBottom = height - rim - borderWidth
+            let stackTop = faceTop + (faceBottom - faceTop - stackHeight) / 2
 
             /// Draws one line horizontally centered with the TOP of its
             /// glyph ink (the actual black area) at `inkTop`. CoreText
             /// positions from the baseline, so the baseline is derived from
             /// the line's measured ink span; the CT y-up flip puts it at
-            /// `size - baseline`.
+            /// `height - baseline`.
             /// When `slotInk` is given (the "--" placeholder), the line's ink
             /// is centered inside the [inkTop, inkTop + slotInk] band instead
             /// of pinned to the cap line — hyphens are only ~30% of cap
@@ -271,9 +332,9 @@ enum CarPlayUI {
                 let ctx = UIGraphicsGetCurrentContext()
                 ctx?.saveGState()
                 ctx?.textMatrix = .identity
-                ctx?.translateBy(x: 0, y: size)
+                ctx?.translateBy(x: 0, y: height)
                 ctx?.scaleBy(x: 1, y: -1)
-                ctx?.textPosition = CGPoint(x: (size - inkWidth) / 2, y: size - baselineFromTop)
+                ctx?.textPosition = CGPoint(x: (width - inkWidth) / 2, y: height - baselineFromTop)
                 CTLineDraw(line, ctx!)
                 ctx?.restoreGState()
             }

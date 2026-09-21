@@ -468,8 +468,11 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
         if displayLimit != lastRenderedSignLimit {
             lastRenderedSignLimit = displayLimit
             // CPBarButton has no focusedImage (that's CPMapButton); the
-            // plain image is all the top-bar button needs.
-            limitButton.image = CarPlayUI.speedLimitSign(value: displayLimit, unit: unitShort, size: 40)
+            // plain image is all the top-bar button needs. The sign is now
+            // the PORTRAIT R2-1 blank (height = 4/3 × width), so pass the
+            // WIDTH (30) — the 40pt image height matches the old square's
+            // footprint in the bar without the system having to downscale.
+            limitButton.image = CarPlayUI.speedLimitSign(value: displayLimit, unit: unitShort, size: 30)
         }
         roadNameButton.title = (roadName?.isEmpty == false) ? roadName! : ""
         // Mirror the same snapshot to the CarPlay Now Playing screen so it

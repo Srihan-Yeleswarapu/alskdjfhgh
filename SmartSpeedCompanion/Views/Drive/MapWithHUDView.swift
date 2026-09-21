@@ -833,8 +833,9 @@ fileprivate struct SearchBarView: View {
 //   • [leading] SpeedReadout — huge speed number with status color, plus
 //     the unit label and an optional REC indicator above.
 //   • [center]  START/STOP pill — cyan capsule, red while recording.
-//   • [trailing] LimitSignView — white-faced circle with red ring + the
-//     small source-chip caption beneath.
+//   • [trailing] LimitSignView — US MUTCD R2-1 portrait sign (white face,
+//     black border, SPEED LIMIT caption + numeral) + the small
+//     source-chip caption beneath.
 //
 // The road-name chip floats centered above the HStack, also no
 // background. Each widget is a separate fileprivate struct so the layout
@@ -1056,14 +1057,18 @@ fileprivate struct LimitSignView: View {
                     forMph: limit,
                     measurementSystem: measurementSystem
                 )
+                // The sign renders as the PORTRAIT R2-1 blank (18×24), so the
+                // frame honors CarPlayUI.signAspect — squashing it back into a
+                // square would distort the whole drawing.
+                let signWidth: CGFloat = isLandscape ? 52 : 64
                 Image(uiImage: CarPlayUI.speedLimitSign(
                     value: limitValue,
                     unit: limitUnit,
-                    size: isLandscape ? 52 : 64
+                    size: signWidth
                 ))
                 .resizable()
                 .interpolation(.high)
-                .frame(width: isLandscape ? 52 : 64, height: isLandscape ? 52 : 64)
+                .frame(width: signWidth, height: signWidth * CarPlayUI.signAspect)
                 .accessibilityLabel("Speed limit sign")
 
                 Text(sourceChip.text)

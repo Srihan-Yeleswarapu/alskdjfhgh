@@ -3,8 +3,9 @@ import XCTest
 
 /// Regression coverage for the speed-limit sign restyle: the HUD previously
 /// drew a UK/Vienna-style white circle with a red ring, but the product now
-/// shows the US MUTCD R2-1 regulatory sign (white face, thick black border,
-/// "SPEED LIMIT" caption, black numeral) on BOTH the iPhone HUD and CarPlay.
+/// shows the US MUTCD R2-1 regulatory sign — the PORTRAIT 18"×24" blank
+/// (white face, black border, "SPEED LIMIT" caption, dominant black numeral)
+/// on BOTH the iPhone HUD and CarPlay.
 ///
 /// The single renderer is `CarPlayUI.speedLimitSign(value:unit:size:)` — the
 /// phone's `LimitSignView` and CarPlay's `limitButton` both consume it, so
@@ -22,6 +23,8 @@ final class SpeedLimitSignTests: XCTestCase {
         // MUTCD R2-1 is black-on-white — no red ring, no colored face.
         XCTAssertTrue(source.contains("signBlack"), "The sign border/caption/numeral must be black.")
         XCTAssertTrue(source.contains("signWhite"), "The sign face must be white.")
+        // The standard R2-1 blank is the portrait 18×24 panel, not a square.
+        XCTAssertTrue(source.contains("signAspect"), "The renderer must expose the portrait R2-1 aspect (signAspect).")
         // Caption words of the real sign.
         XCTAssertTrue(source.contains("\"SPEED\""), "The sign must caption SPEED.")
         XCTAssertTrue(source.contains("\"LIMIT\""), "The sign must caption LIMIT.")
@@ -50,6 +53,12 @@ final class SpeedLimitSignTests: XCTestCase {
         // Tap-to-refresh and the source chip survive the restyle.
         XCTAssertTrue(signBody.contains("Tap to refresh"), "Tap-to-refresh affordance must be preserved.")
         XCTAssertTrue(signBody.contains("sourceChip"), "The limit-source chip must be preserved.")
+        // The HUD frame must honor the portrait aspect — squashing the
+        // rendered image back into a square would distort the drawing.
+        XCTAssertTrue(
+            signBody.contains("signWidth * CarPlayUI.signAspect"),
+            "LimitSignView must frame the portrait aspect (width × signAspect), not a square."
+        )
     }
 
     // MARK: - CarPlay
@@ -59,6 +68,12 @@ final class SpeedLimitSignTests: XCTestCase {
         XCTAssertTrue(
             source.contains("CarPlayUI.speedLimitSign(value: displayLimit, unit: unitShort"),
             "CarPlay's limit button must show the same shared MUTCD sign."
+        )
+        // Portrait blank: the call site passes the WIDTH (30 -> 40pt tall),
+        // not the old square's 40pt width.
+        XCTAssertTrue(
+            source.contains("size: 30)"),
+            "CarPlay must pass the portrait WIDTH (30 -> 40pt tall image), not the old square 40."
         )
         XCTAssertTrue(
             source.contains("limitButton.image = CarPlayUI.speedLimitSign(value: displayLimit, unit: unitShort"),
@@ -137,7 +152,10 @@ final class SpeedLimitSignGeometryTests: XCTestCase {
         .deletingLastPathComponent()
         .deletingLastPathComponent()
 
-    private let renderSize: CGFloat = 120
+    private let renderWidth: CGFloat = 120
+
+    /// Portrait blank: rendered HEIGHT is width × 4/3.
+    private var renderHeight: CGFloat { renderWidth * CarPlayUI.signAspect }
 
     // MARK: - Ink map
 
@@ -181,7 +199,10 @@ final class SpeedLimitSignGeometryTests: XCTestCase {
     /// Contiguous row bands containing ink, inside the inner face region
     /// (inset past rim + border so the frame itself is not measured).
     private func inkBands(in map: InkMap, minGapPx: Int = 4) -> [(top: Int, bottom: Int)] {
-        let inset = Int((renderSize * 0.15) * map.scale)
+        // Inset past the border ring (~4.5%W + AA slack) so only text ink is
+        // scanned; the old square layout used a 15% inset that would now
+        // clip the enlarged caption/numeral glyphs.
+        let inset = Int((renderWidth * 0.085) * map.scale)
         let x0 = inset, x1 = map.pxWidth - inset
         var rowHasInk = [Bool](repeating: false, count: map.pxHeight)
         for y in inset..<(map.pxHeight - inset) {
@@ -214,15 +235,25 @@ final class SpeedLimitSignGeometryTests: XCTestCase {
     }
 
     private func renderSign(value: Int?, unit: String?) -> InkMap {
-        let image = CarPlayUI.speedLimitSign(value: value, unit: unit, size: renderSize)
+        let image = CarPlayUI.speedLimitSign(value: value, unit: unit, size: renderWidth)
         return InkMap(image: image)
+    }
+
+    // MARK: - Portrait blank geometry
+
+    func testRenderedImageIsPortrait() {
+        let map = renderSign(value: 30, unit: nil)
+        let ptsWidth = CGFloat(map.pxWidth) / map.scale
+        let ptsHeight = CGFloat(map.pxHeight) / map.scale
+        XCTAssertEqual(ptsHeight, ptsWidth * CarPlayUI.signAspect, accuracy: 0.5,
+                       "Sign must render in the portrait R2-1 aspect (height = 4/3 × width).")
     }
 
     // MARK: - Stack centering (the original bug)
 
     func testTextStackIsCenteredOnSignFace() {
         let map = renderSign(value: 30, unit: nil)
-        let inset = Int((renderSize * 0.15) * map.scale)
+        let inset = Int((renderWidth * 0.085) * map.scale)
 
         var firstRow = -1, lastRow = -1, firstCol = -1, lastCol = -1
         for y in inset..<(map.pxHeight - inset) {
@@ -238,7 +269,7 @@ final class SpeedLimitSignGeometryTests: XCTestCase {
         let topMargin = firstRow - inset
         let bottomMargin = (map.pxHeight - inset) - lastRow
         let verticalSlack = abs(topMargin - bottomMargin)
-        let tolerance = Int(renderSize * map.scale * 0.02) // 2% of sign size
+        let tolerance = Int(renderWidth * map.scale * 0.03) // 3% of width
         XCTAssertLessThanOrEqual(
             verticalSlack, tolerance,
             "SPEED/LIMIT/numeral stack must be vertically centered: " +
@@ -253,6 +284,34 @@ final class SpeedLimitSignGeometryTests: XCTestCase {
             "Text stack must be horizontally centered: " +
             "left \(leftMargin)px vs right \(rightMargin)px."
         )
+    }
+
+    // MARK: - R2-1 reference proportions (measured off the 18×24 blank)
+
+    func testNumeralDominatesTheSignLikeTheReference() {
+        let map = renderSign(value: 30, unit: nil)
+        let bands = inkBands(in: map)
+        XCTAssertGreaterThanOrEqual(bands.count, 3, "Expected SPEED/LIMIT/numeral ink bands")
+
+        let numeralBand = bands.last!
+        let numeralInk = numeralBand.bottom - numeralBand.top
+        // Reference numeral ink ≈ 47.5% of sign width.
+        XCTAssertEqual(Double(numeralInk) / Double(map.pxWidth),
+                       0.475, accuracy: 0.05,
+                       "Numeral ink height must be ~47.5% of sign width, like the reference blank.")
+    }
+
+    func testCaptionBandHeightMatchesReference() {
+        let map = renderSign(value: 30, unit: nil)
+        let bands = inkBands(in: map)
+        XCTAssertGreaterThanOrEqual(bands.count, 3, "Expected SPEED/LIMIT/numeral ink bands")
+
+        let captionBand = bands[0]
+        let captionInk = captionBand.bottom - captionBand.top
+        // Reference caption ink ≈ 17.5% of sign width.
+        XCTAssertEqual(Double(captionInk) / Double(map.pxWidth),
+                       0.175, accuracy: 0.03,
+                       "Caption ink height must be ~17.5% of sign width, like the reference blank.")
     }
 
     // MARK: - Placeholder dashes centered in the numeral slot
@@ -271,7 +330,7 @@ final class SpeedLimitSignGeometryTests: XCTestCase {
         let dashBand = dashBands.last!
         let digitCenter = CGFloat(digitBand.top + digitBand.bottom) / 2
         let dashCenter = CGFloat(dashBand.top + dashBand.bottom) / 2
-        let tolerance = renderSize * digitMap.scale * 0.015 // 1.5% of size
+        let tolerance = renderWidth * digitMap.scale * 0.015 // 1.5% of width
         XCTAssertLessThanOrEqual(
             abs(dashCenter - digitCenter), tolerance,
             "'--' must be vertically centered in the numeral slot, not pinned to its top: " +
