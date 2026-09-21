@@ -7,7 +7,7 @@ on:
 
 jobs:
   build-and-testflight:
-    runs-on: macos-26
+    runs-on: xcode-27   # macOS 27-based image (Xcode 27.0 default)
     timeout-minutes: 90
 
     steps:
@@ -47,12 +47,12 @@ jobs:
           fi
 
       - name: Select Xcode
-        # Prefer Xcode 26.6 (matches project.yml `xcodeVersion: "26.6"`),
-        # but fall back gracefully to any Xcode 26.x point release if a
-        # future runner image swaps in e.g. 26.7 before this workflow is
-        # updated. Reject anything older than 26.x explicitly so a stray
-        # Xcode 16.2 (from a different runner image) can't silently drift
-        # into the toolchain. macos-26 ships 26.0.1 .. 26.6 today.
+        # The `xcode-27` image runs on macOS 27 and ships Xcode 27.0 as
+        # its default developer directory (26.x point releases remain
+        # installed for compatibility). Prefer whatever is already
+        # active — Xcode 27.0 on this image — and fall back to the newest
+        # installed Xcode*.app otherwise. `sort -V` ranks 27.x ahead of
+        # 26.x, so a future image bump keeps working without edits here.
         # Mirrors `distribute.yml`'s pattern.
         run: |
           XCODE_PATH=$(xcode-select -p 2>/dev/null || true)
