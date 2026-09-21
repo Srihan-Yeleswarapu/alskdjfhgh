@@ -148,35 +148,54 @@ enum CarPlayUI {
     /// (`LimitSignView`) and the CarPlay limit button render through this
     /// single function so the two surfaces can never drift apart.
     ///
-    /// Geometry follows MUTCD R2-1 proportions adapted to a square canvas:
-    /// ~12% corner rounding, a white rim OUTSIDE a ~5%-of-width black border
-    /// (like the stamped aluminum blank), and a SPEED / LIMIT + numeral stack
-    /// centered as one block so the face is never top- or bottom-heavy.
+    /// Geometry is measured off a real MUTCD R2-1 reference photo, not
+    /// eyeballed: a PORTRAIT plate with W/H ≈ 0.79 (the standard 24"×30"
+    /// blank), a thin ~3%-of-width black border hugging the edge with only a
+    /// hairline white margin outside it, tight ~4% corners, and a
+    /// SPEED / LIMIT + numeral stack that nearly fills the face. The portrait
+    /// plate is letterboxed inside the square canvas (both call sites frame
+    /// the image square), so its proportions render true and the side margins
+    /// stay transparent.
     static func speedLimitSign(value: Int?, unit: String?, size: CGFloat) -> UIImage {
         let size = max(24, size)
         let format = UIGraphicsImageRendererFormat.default()
         format.opaque = false
         let renderer = UIGraphicsImageRenderer(size: CGSize(width: size, height: size), format: format)
         return renderer.image { _ in
-            let rect = CGRect(x: 0, y: 0, width: size, height: size)
-            let cornerRadius = size * 0.12
+            /// Visible ink width of a line: CoreText typographic bounds
+            /// minus the trailing kern (kern trails the last glyph, adding
+            /// one phantom space to the measured width).
+            func inkedWidth(_ text: String, font: UIFont, kern: CGFloat) -> CGFloat {
+                let attrs: [NSAttributedString.Key: Any] = [.font: font, .kern: kern]
+                let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attrs))
+                let width = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+                return max(0, width - kern)
+            }
 
-            // White face, then the black regulatory border inset from the
-            // edge so a thin white rim stays visible outside it — exactly
-            // like the real R2-1 blank. The stroke is centered on its path,
-            // so inset by rim + half the border width.
-            let rim = size * 0.045
-            let borderWidth = size * 0.05
+            // --- Plate blank (all fractions below are of the plate's WIDTH) ---
+            let aspect: CGFloat = 0.79           // W/H of the 24"×30" plate
+            let canvasInset = size * 0.01        // keep AA edges off canvas bounds
+            let signH = size - canvasInset * 2
+            let signW = signH * aspect
+            let signRect = CGRect(x: (size - signW) / 2, y: canvasInset, width: signW, height: signH)
+            let cornerRadius = signW * 0.04      // tight corners, as measured
+            let edgeMargin = signW * 0.016       // white margin outside the border
+            let borderWidth = signW * 0.030      // thin regulatory border
+
             signWhite.setFill()
-            UIBezierPath(roundedRect: rect, cornerRadius: cornerRadius).fill()
+            UIBezierPath(roundedRect: signRect, cornerRadius: cornerRadius).fill()
             signBlack.setStroke()
-            let borderInset = rim + borderWidth / 2
+            let borderInset = edgeMargin + borderWidth / 2
             let border = UIBezierPath(
-                roundedRect: rect.insetBy(dx: borderInset, dy: borderInset),
-                cornerRadius: cornerRadius * 0.82
+                roundedRect: signRect.insetBy(dx: borderInset, dy: borderInset),
+                cornerRadius: max(signW * 0.01, cornerRadius - borderInset)
             )
             border.lineWidth = borderWidth
             border.stroke()
+
+            // The white face the legend is laid out into (inside the border).
+            let faceRect = signRect.insetBy(dx: borderInset + borderWidth / 2,
+                                            dy: borderInset + borderWidth / 2)
 
             let numeral: String
             if let v = value, v > 0 {
@@ -195,21 +214,44 @@ enum CarPlayUI {
             // line is placed by its capHeight (the actual black glyph area),
             // via CoreText baseline positioning. This keeps the stack truly
             // centered regardless of font line-height padding quirks.
-            let captionKern = size * 0.015
-            let captionFont = UIFont.systemFont(ofSize: size * 0.155, weight: .heavy)
-            let numeralFont = UIFont.systemFont(ofSize: showUnit ? size * 0.34 : size * 0.44, weight: .black)
-            let unitFont = UIFont.systemFont(ofSize: size * 0.105, weight: .heavy)
+            //
+            // Type scale comes off the measured reference plate: caption
+            // caps ≈ 17.5% of the plate width, numeral caps ≈ 46% (38% when
+            // a unit line shares the face). SF Pro's cap height is ~0.714 em
+            // across weights, which converts cap heights into point sizes.
+            let capRatio: CGFloat = 0.714
+            let captionCap = signW * 0.175
+            let numeralCap = signW * (showUnit ? 0.38 : 0.48)
+            let unitCap = signW * 0.12
+            let captionKern = signW * 0.022
+            let numeralKern = signW * 0.055   // the real plate tracks digits wide
+            let unitKern = signW * 0.02
+            let captionGap = signW * 0.068    // SPEED ↔ LIMIT
+            let numeralGap = signW * 0.068    // LIMIT ↔ numeral
+            let unitGap = showUnit ? signW * 0.025 : 0
 
-            let captionInk = captionFont.capHeight
-            let numeralInk = numeralFont.capHeight
-            let unitInk = unitFont.capHeight
-            let captionGap = size * 0.020   // SPEED ↔ LIMIT
-            let numeralGap = size * 0.032   // LIMIT ↔ numeral
-            let unitGap = showUnit ? size * 0.012 : 0
+            let captionFont = UIFont.systemFont(ofSize: captionCap / capRatio, weight: .heavy)
+            let unitFont = UIFont.systemFont(ofSize: unitCap / capRatio, weight: .heavy)
 
-            let stackHeight = captionInk + captionGap + captionInk
-                + numeralGap + numeralInk + unitGap + (showUnit ? unitInk : 0)
-            let stackTop = (size - stackHeight) / 2
+            // Keep the numeral inside the face: two digits fit at the
+            // reference scale, but 3-digit limits would overflow — rescale
+            // once, exactly (font metrics are linear in size).
+            let baseNumeralSize = numeralCap / capRatio
+            let probeWidth = inkedWidth(
+                numeral,
+                font: UIFont.systemFont(ofSize: baseNumeralSize, weight: .black),
+                kern: numeralKern
+            )
+            let maxNumeralWidth = faceRect.width * 0.92
+            let numeralSize = probeWidth > maxNumeralWidth
+                ? baseNumeralSize * maxNumeralWidth / probeWidth
+                : baseNumeralSize
+            let numeralFont = UIFont.systemFont(ofSize: numeralSize, weight: .black)
+
+            let numeralInk = numeralSize * capRatio
+            let stackHeight = captionCap + captionGap + captionCap
+                + numeralGap + numeralInk + unitGap + (showUnit ? unitCap : 0)
+            let stackTop = faceRect.minY + (faceRect.height - stackHeight) / 2
 
             /// Draws one line horizontally centered with the TOP of its
             /// glyph ink (the actual black area) at `inkTop`. CoreText
@@ -273,19 +315,21 @@ enum CarPlayUI {
                 ctx?.textMatrix = .identity
                 ctx?.translateBy(x: 0, y: size)
                 ctx?.scaleBy(x: 1, y: -1)
-                ctx?.textPosition = CGPoint(x: (size - inkWidth) / 2, y: size - baselineFromTop)
+                // Center on the white FACE (inside the border), not the
+                // canvas — the plate is letterboxed inside a square image.
+                ctx?.textPosition = CGPoint(x: faceRect.midX - inkWidth / 2, y: size - baselineFromTop)
                 CTLineDraw(line, ctx!)
                 ctx?.restoreGState()
             }
 
             drawInk("SPEED", font: captionFont, inkTop: stackTop, kern: captionKern)
-            drawInk("LIMIT", font: captionFont, inkTop: stackTop + captionInk + captionGap, kern: captionKern)
-            let numeralTop = stackTop + captionInk + captionGap + captionInk + numeralGap
+            drawInk("LIMIT", font: captionFont, inkTop: stackTop + captionCap + captionGap, kern: captionKern)
+            let numeralTop = stackTop + captionCap + captionGap + captionCap + numeralGap
             let isPlaceholder = numeral == "--"
-            drawInk(numeral, font: numeralFont, inkTop: numeralTop,
+            drawInk(numeral, font: numeralFont, inkTop: numeralTop, kern: numeralKern,
                     centerInSlotOf: isPlaceholder ? numeralInk : nil)
             if showUnit, let unit {
-                drawInk(unit, font: unitFont, inkTop: numeralTop + numeralInk + unitGap)
+                drawInk(unit, font: unitFont, inkTop: numeralTop + numeralInk + unitGap, kern: unitKern)
             }
         }.withRenderingMode(.alwaysOriginal)
     }

@@ -125,11 +125,15 @@ final class SpeedLimitSignTests: XCTestCase {
     }
 }
 
-/// Pixel-level geometry regression for the R2-1 restyle. The original bug:
+/// Pixel-level geometry regression for the R2-1 restyle. Two original bugs:
 /// text was laid out in font line boxes, bunching ink at the top and leaving
 /// a huge blank white bottom half (and the black border bled to the sign's
-/// edge). These tests render the ACTUAL UIImage and measure where the ink
-/// really lands, so layout can never silently drift again.
+/// edge); then the first redraw drew a SQUARE badge with a chunky border and
+/// small digits instead of the real R2-1 portrait plate. These tests render
+/// the ACTUAL UIImage and measure where the ink really lands — against both
+/// the centered-stack rules and the proportions measured off a real R2-1
+/// reference (portrait 0.79 plate, ~3%-of-width border, 17.5% caption caps,
+/// ~46% numeral caps) — so layout can never silently drift again.
 final class SpeedLimitSignGeometryTests: XCTestCase {
 
     /// Anchor for repo-relative resources, mirroring SpeedLimitSignTests.
@@ -147,6 +151,7 @@ final class SpeedLimitSignGeometryTests: XCTestCase {
         let pxHeight: Int
         let scale: CGFloat
         private let dark: [Bool]
+        private let alpha: [UInt8]
 
         init(image: UIImage) {
             let cg = try! XCTUnwrap(image.cgImage)
@@ -164,18 +169,39 @@ final class SpeedLimitSignGeometryTests: XCTestCase {
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
             )!
             ctx.draw(cg, in: CGRect(x: 0, y: 0, width: pxWidth, height: pxHeight))
-            var map = [Bool](repeating: false, count: pxWidth * pxHeight)
+            var darkMap = [Bool](repeating: false, count: pxWidth * pxHeight)
+            var alphaMap = [UInt8](repeating: 0, count: pxWidth * pxHeight)
             for i in 0..<(pxWidth * pxHeight) {
                 let r = Double(pixels[i * 4])
                 let g = Double(pixels[i * 4 + 1])
                 let b = Double(pixels[i * 4 + 2])
                 let luminance = 0.299 * r + 0.587 * g + 0.114 * b
-                map[i] = luminance < 128 // sign black ≈ 15, face white ≈ 252
+                darkMap[i] = luminance < 128 // sign black ≈ 15, face white ≈ 252
+                alphaMap[i] = pixels[i * 4 + 3] // plate face vs transparent letterbox
             }
-            dark = map
+            dark = darkMap
+            alpha = alphaMap
         }
 
         func isDark(x: Int, y: Int) -> Bool { dark[y * pxWidth + x] }
+        func isOpaque(x: Int, y: Int) -> Bool { alpha[y * pxWidth + x] > 32 }
+    }
+
+    /// Bounds of all opaque pixels — i.e. the plate itself, since the
+    /// portrait plate is letterboxed inside the square transparent canvas.
+    private func plateBounds(in map: InkMap) -> CGRect {
+        var minX = Int.max, maxX = -1, minY = Int.max, maxY = -1
+        for y in 0..<map.pxHeight {
+            for x in 0..<map.pxWidth where map.isOpaque(x: x, y: y) {
+                minX = min(minX, x); maxX = max(maxX, x)
+                minY = min(minY, y); maxY = max(maxY, y)
+            }
+        }
+        return CGRect(
+            x: CGFloat(minX) / map.scale, y: CGFloat(minY) / map.scale,
+            width: CGFloat(maxX - minX + 1) / map.scale,
+            height: CGFloat(maxY - minY + 1) / map.scale
+        )
     }
 
     /// Contiguous row bands containing ink, inside the inner face region
@@ -283,6 +309,60 @@ final class SpeedLimitSignGeometryTests: XCTestCase {
         XCTAssertLessThan(
             CGFloat(dashHeight), CGFloat(digitHeight) * 0.75,
             "Hyphen ink must be much shorter than digit ink — sanity check that we compared '--' with a digit."
+        )
+    }
+
+    // MARK: - R2-1 plate geometry (measured off the reference blank)
+
+    func testPlateIsPortraitWithThinBorderLikeTheRealSign() {
+        let map = renderSign(value: 55, unit: nil)
+        let plate = plateBounds(in: map)
+
+        // The 24"×30" regulatory blank: portrait, W/H ≈ 0.79 — NOT the
+        // square badge the first redraw produced.
+        XCTAssertLessThan(plate.width, plate.height, "R2-1 is a portrait plate.")
+        XCTAssertEqual(plate.width / plate.height, 0.79, accuracy: 0.03)
+        // Letterboxed in the square canvas: real side margins must exist.
+        XCTAssertEqual(plate.minX, (renderSize - plate.width) / 2, accuracy: 1.0)
+
+        // Border thickness: walk the horizontal centerline from the plate's
+        // left edge — a white margin, then the black border run.
+        let midY = Int(round(plate.midY * map.scale))
+        var x = Int(round(plate.minX * map.scale))
+        while x < map.pxWidth, !map.isDark(x: x, y: midY) { x += 1 }
+        var blackRun = 0
+        while x < map.pxWidth, map.isDark(x: x, y: midY) { blackRun += 1; x += 1 }
+        let borderFraction = CGFloat(blackRun) / map.scale / plate.width
+        XCTAssertEqual(
+            borderFraction, 0.030, accuracy: 0.012,
+            "The border must be the thin ~3%-of-width regulatory rule hugging " +
+            "the edge, not the chunky frame+rim of the badge design."
+        )
+    }
+
+    func testCaptionAndNumeralMatchReferenceTypeScale() {
+        let map = renderSign(value: 55, unit: nil)
+        let plate = plateBounds(in: map)
+        let bands = inkBands(in: map, minGapPx: 4)
+        // SPEED, LIMIT, numeral — three distinct bands at this size.
+        XCTAssertEqual(bands.count, 3, "Expected exactly SPEED/LIMIT/numeral ink bands")
+
+        let bandFraction = { (band: (top: Int, bottom: Int)) in
+            CGFloat(band.bottom - band.top + 1) / map.scale / plate.width
+        }
+        XCTAssertEqual(
+            bandFraction(bands[0]), 0.175, accuracy: 0.03,
+            "SPEED caps must be ≈17.5% of plate width, as measured on the reference."
+        )
+        XCTAssertEqual(
+            bandFraction(bands[1]), 0.175, accuracy: 0.03,
+            "LIMIT caps must match SPEED."
+        )
+        XCTAssertEqual(
+            bandFraction(bands[2]), 0.46, accuracy: 0.05,
+            "The numeral must dominate the face (≈46% of plate width, like the " +
+            "real sign) — the badge design's ~24% digits were unreadable at " +
+            "CarPlay sizes."
         )
     }
 }
