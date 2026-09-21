@@ -207,6 +207,16 @@ public final class SpeedEngine: ObservableObject {
         zeroDeadbandCount = minZerosBeforeStop
     }
 
+    #if DEBUG
+    /// Test hook (debug builds only): drives the exact same pipeline as the
+    /// location subscription without waiting on Core Location delivery. Used
+    /// by the on-device XCTest suite to replay synthetic GPS drives through
+    /// the real smoothing/deadband/status logic.
+    internal func processLocationForTesting(_ location: CLLocation) {
+        processLocation(location)
+    }
+    #endif
+
     /// Returns whether a location is eligible to start a speed-limit lookup.
     /// This is kept pure so the accuracy boundary can be regression-tested
     /// without starting Core Location or a network request.
