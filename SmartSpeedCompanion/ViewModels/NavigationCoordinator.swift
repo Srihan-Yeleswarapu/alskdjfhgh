@@ -2235,16 +2235,37 @@ public final class NavigationCoordinator: ObservableObject, @unchecked Sendable 
             "SR": "State Route", "CR": "County Route"
         ]
 
-        for (abbr, full) in mapping {
+        // Two-phase substitution: every match is first replaced with a
+        // private-use sentinel, then the sentinels are swapped for their
+        // expansions. Expanding directly inside the loop re-scanned text
+        // that earlier iterations had already rewritten — e.g. "US 60" →
+        // "U.S. 60", after which a later single-letter pass matched the
+        // now-standalone S inside "U.S." and produced "U.South 60". Which
+        // pass ran first depended on Dictionary's unspecified iteration
+        // order, so roughly half of launches read a garbled road name
+        // aloud. Sentinels make the result order-independent and stable.
+        var expansions: [String: String] = [:]
+        var sentinelSeed = 0
+        // Longest keys first: deterministic, and lets multi-letter
+        // designators (NE, SR, US) win before their single-letter prefixes
+        // can ever be considered.
+        for abbr in mapping.keys.sorted(by: { $0.count > $1.count }) {
+            guard let full = mapping[abbr] else { continue }
             // \\b boundaries ensure we don't replace "W" inside the word "Way".
-            let pattern = "\\b\(abbr)\\b\\.?"
-            if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
-                let range = NSRange(result.startIndex..., in: result)
-                result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: full)
-            }
+            let pattern = "\\b\(NSRegularExpression.escapedPattern(for: abbr))\\b\\.?"
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
+            let range = NSRange(result.startIndex..., in: result)
+            let sentinel = "\u{E000}\(sentinelSeed)\u{E001}"
+            sentinelSeed += 1
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: sentinel)
+            expansions[sentinel] = full
+        }
+        for (sentinel, full) in expansions {
+            result = result.replacingOccurrences(of: sentinel, with: full)
         }
 
-        // Manual interstate fix
+        // Manual interstate fix (output "Interstate " contains no table
+        // keys, so a plain single pass stays correct here).
         if let regex = try? NSRegularExpression(pattern: "\\bI-", options: [.caseInsensitive]) {
             let range = NSRange(result.startIndex..., in: result)
             result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "Interstate ")
