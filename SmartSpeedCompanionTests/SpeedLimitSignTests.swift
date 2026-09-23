@@ -18,10 +18,14 @@ final class SpeedLimitSignTests: XCTestCase {
         XCTAssertTrue(
             source.contains("static func speedLimitSign(value: Int?, unit: String?, size: CGFloat) -> UIImage"),
             "The sign must be rendered by one shared function consumed by both phone and CarPlay."
-        )
-        // MUTCD R2-1 is black-on-white — no red ring, no colored face.
-        XCTAssertTrue(source.contains("signBlack"), "The sign border/caption/numeral must be black.")
-        XCTAssertTrue(source.contains("signWhite"), "The sign face must be white.")
+        )            // MUTCD R2-1 is black-on-white — no red ring, no colored face.
+            XCTAssertTrue(source.contains("signBlack"), "The sign border/caption/numeral must be black.")
+            XCTAssertTrue(source.contains("signWhite"), "The sign face must be white.")
+            // The Highway Gothic descendant bundled with the app.
+            XCTAssertTrue(
+                source.contains("Overpass-Bold"),
+                "The sign must draw with the bundled Overpass Bold (Highway Gothic descendant)."
+            )
         // Caption words of the real sign.
         XCTAssertTrue(source.contains("\"SPEED\""), "The sign must caption SPEED.")
         XCTAssertTrue(source.contains("\"LIMIT\""), "The sign must caption LIMIT.")
@@ -125,15 +129,15 @@ final class SpeedLimitSignTests: XCTestCase {
     }
 }
 
-/// Pixel-level geometry regression for the R2-1 restyle. Two original bugs:
-/// text was laid out in font line boxes, bunching ink at the top and leaving
-/// a huge blank white bottom half (and the black border bled to the sign's
-/// edge); then the first redraw drew a SQUARE badge with a chunky border and
-/// small digits instead of the real R2-1 portrait plate. These tests render
-/// the ACTUAL UIImage and measure where the ink really lands — against both
-/// the centered-stack rules and the proportions measured off a real R2-1
-/// reference (portrait 0.79 plate, ~3%-of-width border, 17.5% caption caps,
-/// ~46% numeral caps) — so layout can never silently drift again.
+/// Pixel-level geometry regression for the R2-1 restyle. Original bugs:
+/// text was laid out in font line boxes (bunching ink at the top), then a
+/// square badge with a chunky border and small digits replaced the real
+/// sign. The current design is the user-approved HTML replica
+/// (`speed-limit-sign.html`), pixel-measured from a real R2-1 photo.
+/// These tests render the ACTUAL UIImage and measure where the ink really
+/// lands against that approved spec — 1000×1250 sheet, 10-unit white
+/// margin, 28-unit border, caption ink widths 800/611, numeral 750 wide —
+/// so the app can never silently drift from what was approved.
 final class SpeedLimitSignGeometryTests: XCTestCase {
 
     /// Anchor for repo-relative resources, mirroring SpeedLimitSignTests.
@@ -248,35 +252,40 @@ final class SpeedLimitSignGeometryTests: XCTestCase {
 
     func testTextStackIsCenteredOnSignFace() {
         let map = renderSign(value: 30, unit: nil)
-        let inset = Int((renderSize * 0.15) * map.scale)
+        let plate = plateBounds(in: map)
+        let plateLeftPx = Int(round(plate.minX * map.scale))
+        let plateRightPx = Int(round(plate.maxX * map.scale))
 
         var firstRow = -1, lastRow = -1, firstCol = -1, lastCol = -1
-        for y in inset..<(map.pxHeight - inset) {
-            for x in inset..<(map.pxWidth - inset) where map.isDark(x: x, y: y) {
+        for y in 0..<map.pxHeight {
+            for x in plateLeftPx...plateRightPx where map.isDark(x: x, y: y)
+                && x > plateLeftPx + 2 && x < plateRightPx - 2 { // skip the border stroke
                 if firstRow < 0 { firstRow = y }
                 lastRow = y
                 if firstCol < 0 || x < firstCol { firstCol = x }
                 if x > lastCol { lastCol = x }
             }
         }
-        XCTAssertGreaterThan(firstRow, 0, "Sign must contain ink inside the inner face region")
+        XCTAssertGreaterThan(firstRow, 0, "Sign must contain legend ink inside the plate")
 
-        let topMargin = firstRow - inset
-        let bottomMargin = (map.pxHeight - inset) - lastRow
+        // Legend vertical centering is measured against the plate itself
+        // (its top/bottom rounded corner arcs dip 1-3px below the exact
+        // midline scan line, so ±3px is the honest tolerance).
+        let topMargin = firstRow - Int(round(plate.minY * map.scale))
+        let bottomMargin = Int(round(plate.maxY * map.scale)) - lastRow
         let verticalSlack = abs(topMargin - bottomMargin)
-        let tolerance = Int(renderSize * map.scale * 0.02) // 2% of sign size
         XCTAssertLessThanOrEqual(
-            verticalSlack, tolerance,
-            "SPEED/LIMIT/numeral stack must be vertically centered: " +
+            verticalSlack, 3,
+            "SPEED/LIMIT/numeral stack must be vertically centered on the plate: " +
             "top margin \(topMargin)px vs bottom margin \(bottomMargin)px — " +
             "this is the top-heavy layout regression."
         )
 
-        let leftMargin = firstCol - inset
-        let rightMargin = (map.pxWidth - inset) - lastCol
+        let leftMargin = firstCol - plateLeftPx
+        let rightMargin = plateRightPx - lastCol
         XCTAssertLessThanOrEqual(
-            abs(leftMargin - rightMargin), tolerance,
-            "Text stack must be horizontally centered: " +
+            abs(leftMargin - rightMargin), 2,
+            "Text stack must be horizontally centered on the plate: " +
             "left \(leftMargin)px vs right \(rightMargin)px."
         )
     }
@@ -308,25 +317,26 @@ final class SpeedLimitSignGeometryTests: XCTestCase {
         let dashHeight = dashBand.bottom - dashBand.top
         XCTAssertLessThan(
             CGFloat(dashHeight), CGFloat(digitHeight) * 0.75,
-            "Hyphen ink must be much shorter than digit ink — sanity check that we compared '--' with a digit."
+            "Dash ink must be much shorter than digit ink — sanity check that we compared '--' with a digit."
         )
     }
 
-    // MARK: - R2-1 plate geometry (measured off the reference blank)
+    // MARK: - R2-1 plate geometry (approved HTML replica spec)
 
     func testPlateIsPortraitWithThinBorderLikeTheRealSign() {
         let map = renderSign(value: 55, unit: nil)
         let plate = plateBounds(in: map)
 
-        // The 24"×30" regulatory blank: portrait, W/H ≈ 0.79 — NOT the
+        // The 1000×1250 regulatory blank: portrait, aspect 0.8 — NOT the
         // square badge the first redraw produced.
         XCTAssertLessThan(plate.width, plate.height, "R2-1 is a portrait plate.")
-        XCTAssertEqual(plate.width / plate.height, 0.79, accuracy: 0.03)
+        XCTAssertEqual(plate.width / plate.height, 0.8, accuracy: 0.03)
         // Letterboxed in the square canvas: real side margins must exist.
         XCTAssertEqual(plate.minX, (renderSize - plate.width) / 2, accuracy: 1.0)
 
         // Border thickness: walk the horizontal centerline from the plate's
-        // left edge — a white margin, then the black border run.
+        // left edge — a white margin, then the black border run. The spec's
+        // 28-unit rule is 2.8% of the 1000-unit sheet width.
         let midY = Int(round(plate.midY * map.scale))
         var x = Int(round(plate.minX * map.scale))
         while x < map.pxWidth, !map.isDark(x: x, y: midY) { x += 1 }
@@ -334,9 +344,10 @@ final class SpeedLimitSignGeometryTests: XCTestCase {
         while x < map.pxWidth, map.isDark(x: x, y: midY) { blackRun += 1; x += 1 }
         let borderFraction = CGFloat(blackRun) / map.scale / plate.width
         XCTAssertEqual(
-            borderFraction, 0.030, accuracy: 0.012,
-            "The border must be the thin ~3%-of-width regulatory rule hugging " +
-            "the edge, not the chunky frame+rim of the badge design."
+            borderFraction, 0.028, accuracy: 0.012,
+            "The border must be the thin 2.8%-of-width regulatory rule hugging " +
+            "the edge (28 units of the 1000-unit sheet), not the chunky " +
+            "frame+rim of the badge design."
         )
     }
 
@@ -347,22 +358,54 @@ final class SpeedLimitSignGeometryTests: XCTestCase {
         // SPEED, LIMIT, numeral — three distinct bands at this size.
         XCTAssertEqual(bands.count, 3, "Expected exactly SPEED/LIMIT/numeral ink bands")
 
-        let bandFraction = { (band: (top: Int, bottom: Int)) in
-            CGFloat(band.bottom - band.top + 1) / map.scale / plate.width
+        // Column ink extents of a band (used for the ink-width checks).
+        let bandExtent = { (band: (top: Int, bottom: Int)) -> (left: Int, right: Int) in
+            let inset = Int((self.renderSize * 0.15) * map.scale)
+            var left = Int.max, right = -1
+            for y in band.top...band.bottom {
+                for x in stride(from: inset, to: map.pxWidth - inset, by: 1) where map.isDark(x: x, y: y) {
+                    left = min(left, x); right = max(right, x)
+                }
+            }
+            return (left, right)
         }
+        let inkWidthFraction = { (band: (top: Int, bottom: Int)) -> CGFloat in
+            let extent = bandExtent(band)
+            return CGFloat(extent.right - extent.left + 1) / map.scale / plate.width
+        }
+
+        // Cap bands: 171/1000 ≈ 17.1% of sheet width, as measured.
         XCTAssertEqual(
-            bandFraction(bands[0]), 0.175, accuracy: 0.03,
-            "SPEED caps must be ≈17.5% of plate width, as measured on the reference."
+            CGFloat(bands[0].bottom - bands[0].top + 1) / map.scale / plate.width,
+            0.171, accuracy: 0.03,
+            "SPEED caps must be ≈17.1% of sheet width, as measured on the reference."
         )
         XCTAssertEqual(
-            bandFraction(bands[1]), 0.175, accuracy: 0.03,
+            CGFloat(bands[1].bottom - bands[1].top + 1) / map.scale / plate.width,
+            0.171, accuracy: 0.03,
             "LIMIT caps must match SPEED."
         )
         XCTAssertEqual(
-            bandFraction(bands[2]), 0.46, accuracy: 0.05,
-            "The numeral must dominate the face (≈46% of plate width, like the " +
-            "real sign) — the badge design's ~24% digits were unreadable at " +
-            "CarPlay sizes."
+            CGFloat(bands[2].bottom - bands[2].top + 1) / map.scale / plate.width,
+            0.436, accuracy: 0.04,
+            "The numeral must dominate the face (≈43.6% of sheet width) — the " +
+            "badge design's ~24% digits were unreadable at CarPlay sizes."
+        )
+
+        // Ink WIDTHS (the fit() solve's contract): SPEED 800/1000,
+        // LIMIT 611/1000, numeral 750/1000 of the sheet.
+        XCTAssertEqual(
+            inkWidthFraction(bands[0]), 0.800, accuracy: 0.05,
+            "SPEED ink must span ≈80% of the sheet width — the approved " +
+            "caption width from the measured reference."
+        )
+        XCTAssertEqual(
+            inkWidthFraction(bands[1]), 0.611, accuracy: 0.05,
+            "LIMIT ink must span ≈61% of the sheet width."
+        )
+        XCTAssertEqual(
+            inkWidthFraction(bands[2]), 0.750, accuracy: 0.06,
+            "The numeral ink must span ≈75% of the sheet width."
         )
     }
 }

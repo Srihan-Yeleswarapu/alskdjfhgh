@@ -113,6 +113,15 @@ targets:
       # "audio alerts off" choice.
       - path: SmartSpeedCompanion/Resources/silent_alert.wav
         buildPhase: resources
+      # Overpass Bold (SIL OFL) — Highway Gothic descendant drawn by
+      # CarPlayUI.speedLimitSign; registered at runtime from the bundle.
+      # Per-file buildPhase:resources (same pattern as CameraTuning.json)
+      # so the TTF lands flat in the bundle root where
+      # Bundle.url(forResource:) finds it. The OFL license ships beside it.
+      - path: SmartSpeedCompanion/Resources/Fonts/Overpass-Bold.ttf
+        buildPhase: resources
+      - path: SmartSpeedCompanion/Resources/Fonts/OFL.txt
+        buildPhase: resources
       # Preserve the Arizona SQLite implementation/data in the repository for a
       # future all-states replacement, but do not bundle it in the production app.
       # No active code path calls ArizonaSpeedLimitService today.

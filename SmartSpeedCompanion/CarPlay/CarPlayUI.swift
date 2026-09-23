@@ -137,199 +137,239 @@ enum CarPlayUI {
 
     // MARK: - Speed Limit Sign (US MUTCD R2-1 style)
 
-    /// Colors of the US regulatory speed-limit sign (MUTCD R2-1): white
-    /// face, black border, black caption + numeral. US signs are
+    /// Colors sampled from the reference photo of a real R2-1 blank: white
+    /// face, near-black (#202020) border/caption/numeral. US signs are
     /// black-on-white with no red ring — the red-ring circle is the
     /// Vienna/UK convention the HUD previously used.
-    private static let signBlack = UIColor(red: 0.06, green: 0.06, blue: 0.06, alpha: 1)
-    private static let signWhite = UIColor(red: 0.99, green: 0.99, blue: 0.98, alpha: 1)
+    private static let signBlack = UIColor(red: 0.125, green: 0.125, blue: 0.125, alpha: 1)
+    private static let signWhite = UIColor.white
+
+    /// Overpass Bold (SIL OFL) — the open-source descendant of Highway
+    /// Gothic, the typeface family on real US regulatory signs. The TTF is
+    /// bundled (Package.swift `resources:` / project.yml resources phase)
+    /// and registered once per process. Text layout below is calibrated
+    /// empirically — a cap-height probe and a per-line tracking solve — so
+    /// even if registration ever failed and the system heavy weight were
+    /// used, the sign would still land on the measured R2-1 proportions.
+    private static let signFontName = "Overpass-Bold"
+    private static let registerSignFont: Void = {
+        #if SWIFT_PACKAGE
+        let bundles = [Bundle.module]
+        #else
+        let bundles = [Bundle.main]
+        #endif
+        for bundle in bundles {
+            if let url = bundle.url(forResource: signFontName, withExtension: "ttf") {
+                // .process scope: visible app-wide for this launch. A failure
+                // is non-fatal — signFont falls back to the system heavy weight.
+                CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
+            }
+        }
+    }()
+
+    private static func signFont(_ size: CGFloat) -> UIFont {
+        _ = registerSignFont
+        return UIFont(name: signFontName, size: size)
+            ?? UIFont.systemFont(ofSize: size, weight: .heavy)
+    }
 
     /// Draws the US-style speed-limit sign at any size. Both the phone HUD
     /// (`LimitSignView`) and the CarPlay limit button render through this
     /// single function so the two surfaces can never drift apart.
     ///
-    /// Geometry is measured off a real MUTCD R2-1 reference photo, not
-    /// eyeballed: a PORTRAIT plate with W/H ≈ 0.79 (the standard 24"×30"
-    /// blank), a thin ~3%-of-width black border hugging the edge with only a
-    /// hairline white margin outside it, tight ~4% corners, and a
-    /// SPEED / LIMIT + numeral stack that nearly fills the face. The portrait
-    /// plate is letterboxed inside the square canvas (both call sites frame
-    /// the image square), so its proportions render true and the side margins
-    /// stay transparent.
+    /// This is a faithful Swift port of the user-approved HTML replica
+    /// (`speed-limit-sign.html` in the repo root). Every layout number is a
+    /// fraction of the sheet width, pixel-measured from the reference photo
+    /// of a real R2-1 blank (1000×1250 units):
+    ///
+    ///     white margin 10 · border 28 thick · corner radius 30
+    ///     SPEED  cap 171 · ink width 800 · baseline y 283
+    ///     LIMIT  cap 171 · ink width 611 · baseline y 536  (gap 82)
+    ///     50     cap 436 · ink width 750 · baseline y 1056 (gap 84)
+    ///
+    /// Text placement is ink-exact, exactly like the replica's canvas
+    /// `actualBoundingBox` math: each font size is solved from a cap-height
+    /// probe, each line's letter-spacing is solved so the INK width lands
+    /// on the measured target, and lines are placed start-anchored so their
+    /// ink is centered regardless of side bearings. The portrait sheet is
+    /// letterboxed inside the square canvas (both call sites frame the
+    /// image square), leaving transparent side margins.
     static func speedLimitSign(value: Int?, unit: String?, size: CGFloat) -> UIImage {
         let size = max(24, size)
         let format = UIGraphicsImageRendererFormat.default()
         format.opaque = false
         let renderer = UIGraphicsImageRenderer(size: CGSize(width: size, height: size), format: format)
         return renderer.image { _ in
-            /// Visible ink width of a line: CoreText typographic bounds
-            /// minus the trailing kern (kern trails the last glyph, adding
-            /// one phantom space to the measured width).
-            func inkedWidth(_ text: String, font: UIFont, kern: CGFloat) -> CGFloat {
-                let attrs: [NSAttributedString.Key: Any] = [.font: font, .kern: kern]
-                let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attrs))
-                let width = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
-                return max(0, width - kern)
-            }
 
-            // --- Plate blank (all fractions below are of the plate's WIDTH) ---
-            let aspect: CGFloat = 0.79           // W/H of the 24"×30" plate
-            let canvasInset = size * 0.01        // keep AA edges off canvas bounds
-            let signH = size - canvasInset * 2
-            let signW = signH * aspect
-            let signRect = CGRect(x: (size - signW) / 2, y: canvasInset, width: signW, height: signH)
-            let cornerRadius = signW * 0.04      // tight corners, as measured
-            let edgeMargin = signW * 0.016       // white margin outside the border
-            let borderWidth = signW * 0.030      // thin regulatory border
+            // ---- Sheet blank ------------------------------------------------
+            let canvasInset = size * 0.01            // keep AA edges off the canvas
+            let sheetH = size - canvasInset * 2
+            let sheetW = sheetH * (1000.0 / 1250.0)  // the 24"×30" regulatory blank
+            let sheet = CGRect(x: (size - sheetW) / 2, y: canvasInset, width: sheetW, height: sheetH)
+            let u = sheetW / 1000                    // one spec unit in points
 
             signWhite.setFill()
-            UIBezierPath(roundedRect: signRect, cornerRadius: cornerRadius).fill()
+            UIBezierPath(roundedRect: sheet, cornerRadius: 30 * u).fill()
+            let borderW = 28 * u
+            let borderInset = 10 * u + borderW / 2   // white margin outside a stroke centered on its inset rect
             signBlack.setStroke()
-            let borderInset = edgeMargin + borderWidth / 2
             let border = UIBezierPath(
-                roundedRect: signRect.insetBy(dx: borderInset, dy: borderInset),
-                cornerRadius: max(signW * 0.01, cornerRadius - borderInset)
-            )
-            border.lineWidth = borderWidth
+                roundedRect: sheet.insetBy(dx: borderInset, dy: borderInset),
+                cornerRadius: max(2 * u, 30 * u - borderInset))
+            border.lineWidth = borderW
             border.stroke()
+            let faceCenterX = sheet.midX
 
-            // The white face the legend is laid out into (inside the border).
-            let faceRect = signRect.insetBy(dx: borderInset + borderWidth / 2,
-                                            dy: borderInset + borderWidth / 2)
-
-            let numeral: String
-            if let v = value, v > 0 {
-                numeral = "\(v)"
-            } else {
-                numeral = "--"
-            }
-            // Real US signs carry no unit ("35", never "35 MPH"). Metric
-            // signs (km/h) do, and metric users here historically needed the
-            // disambiguation — so the unit is drawn for anything but MPH.
-            let showUnit = numeral != "--"
-                && unit?.isEmpty == false
-                && unit?.uppercased() != "MPH"
-
-            // Layout is done in INK coordinates, not font line boxes: each
-            // line is placed by its capHeight (the actual black glyph area),
-            // via CoreText baseline positioning. This keeps the stack truly
-            // centered regardless of font line-height padding quirks.
-            //
-            // Type scale comes off the measured reference plate: caption
-            // caps ≈ 17.5% of the plate width, numeral caps ≈ 46% (38% when
-            // a unit line shares the face). SF Pro's cap height is ~0.714 em
-            // across weights, which converts cap heights into point sizes.
-            let capRatio: CGFloat = 0.714
-            let captionCap = signW * 0.175
-            let numeralCap = signW * (showUnit ? 0.38 : 0.48)
-            let unitCap = signW * 0.12
-            let captionKern = signW * 0.022
-            let numeralKern = signW * 0.055   // the real plate tracks digits wide
-            let unitKern = signW * 0.02
-            let captionGap = signW * 0.068    // SPEED ↔ LIMIT
-            let numeralGap = signW * 0.068    // LIMIT ↔ numeral
-            let unitGap = showUnit ? signW * 0.025 : 0
-
-            let captionFont = UIFont.systemFont(ofSize: captionCap / capRatio, weight: .heavy)
-            let unitFont = UIFont.systemFont(ofSize: unitCap / capRatio, weight: .heavy)
-
-            // Keep the numeral inside the face: two digits fit at the
-            // reference scale, but 3-digit limits would overflow — rescale
-            // once, exactly (font metrics are linear in size).
-            let baseNumeralSize = numeralCap / capRatio
-            let probeWidth = inkedWidth(
-                numeral,
-                font: UIFont.systemFont(ofSize: baseNumeralSize, weight: .black),
-                kern: numeralKern
-            )
-            let maxNumeralWidth = faceRect.width * 0.92
-            let numeralSize = probeWidth > maxNumeralWidth
-                ? baseNumeralSize * maxNumeralWidth / probeWidth
-                : baseNumeralSize
-            let numeralFont = UIFont.systemFont(ofSize: numeralSize, weight: .black)
-
-            let numeralInk = numeralSize * capRatio
-            let stackHeight = captionCap + captionGap + captionCap
-                + numeralGap + numeralInk + unitGap + (showUnit ? unitCap : 0)
-            let stackTop = faceRect.minY + (faceRect.height - stackHeight) / 2
-
-            /// Draws one line horizontally centered with the TOP of its
-            /// glyph ink (the actual black area) at `inkTop`. CoreText
-            /// positions from the baseline, so the baseline is derived from
-            /// the line's measured ink span; the CT y-up flip puts it at
-            /// `size - baseline`.
-            /// When `slotInk` is given (the "--" placeholder), the line's ink
-            /// is centered inside the [inkTop, inkTop + slotInk] band instead
-            /// of pinned to the cap line — hyphens are only ~30% of cap
-            /// height, so top-pinning would hug them to the slot's top.
-            func drawInk(_ text: String, font: UIFont, inkTop: CGFloat, kern: CGFloat = 0, centerInSlotOf slotInk: CGFloat? = nil) {
+            // ---- Ink-exact text engine --------------------------------------
+            /// Ink extents of `text` under `font` + `kern`, measured from
+            /// per-glyph bounding boxes and post-kern advances — CoreText's
+            /// equivalent of the replica's canvas actualBoundingBox. Offsets
+            /// are relative to the pen; `top` is the ink's height above the
+            /// baseline.
+            func measureLine(_ text: String, font: UIFont, kern: CGFloat)
+                -> (line: CTLine, left: CGFloat, right: CGFloat, top: CGFloat) {
                 let attrs: [NSAttributedString.Key: Any] = [.font: font, .kern: kern]
                 let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attrs))
-                let lineWidth = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
-
-                // Measure the line's ink span above the baseline from its
-                // own glyph bounding boxes (digits/caps top out at cap
-                // height; hyphens are much shorter). Falls back to the
-                // font's cap height if measurement ever fails.
-                var inkTopAboveBaseline = font.capHeight
-                var inkBottomAboveBaseline: CGFloat = 0
-                let runs = (CTLineGetGlyphRuns(line) as? [CTRun]) ?? []
-                var measuredAnyGlyph = false
-                var maxAbove = -CGFloat.greatestFiniteMagnitude
-                var minAbove = CGFloat.greatestFiniteMagnitude
-                for run in runs {
+                var left = CGFloat.greatestFiniteMagnitude
+                var right = -CGFloat.greatestFiniteMagnitude
+                var top = -CGFloat.greatestFiniteMagnitude
+                var pen: CGFloat = 0
+                for run in (CTLineGetGlyphRuns(line) as? [CTRun]) ?? [] {
                     let count = CTRunGetGlyphCount(run)
                     guard count > 0 else { continue }
                     var glyphs = [CGGlyph](repeating: 0, count: count)
                     CTRunGetGlyphs(run, CFRange(location: 0, length: count), &glyphs)
+                    var advances = [CGSize](repeating: .zero, count: count)
+                    CTRunGetAdvances(run, CFRange(location: 0, length: count), &advances)
                     var bounds = [CGRect](repeating: .zero, count: count)
-                    // UIFont toll-free-bridges to CTFont; the font passed
-                    // in IS the one attached to the string, so measure with
-                    // its actual weight.
+                    // The font passed in IS the one attached to the string,
+                    // so measuring with it reflects the actual weight.
                     CTFontGetBoundingRectsForGlyphs(font, .horizontal, glyphs, &bounds, count)
-                    for b in bounds {
-                        measuredAnyGlyph = true
-                        maxAbove = max(maxAbove, b.maxY)
-                        minAbove = min(minAbove, b.minY)
+                    for i in 0..<count {
+                        left = min(left, pen + bounds[i].minX)
+                        right = max(right, pen + bounds[i].maxX)
+                        top = max(top, bounds[i].maxY)
+                        pen += advances[i].width
                     }
                 }
-                if measuredAnyGlyph, maxAbove > minAbove {
-                    inkTopAboveBaseline = maxAbove
-                    inkBottomAboveBaseline = minAbove
-                }
+                if left > right { left = 0; right = 0 }
+                if top < 0 { top = font.capHeight }
+                return (line, left, right, top)
+            }
 
-                let baselineFromTop: CGFloat
-                if let slotInk {
-                    let inkHeight = inkTopAboveBaseline - inkBottomAboveBaseline
-                    baselineFromTop = inkTop + (slotInk - inkHeight) / 2 + inkTopAboveBaseline
-                } else {
-                    baselineFromTop = inkTop + inkTopAboveBaseline
-                }
+            /// Cap-height ratio of the loaded font: ink top of 'H' per point.
+            /// Solved at runtime (the replica's probe), so any font swap
+            /// keeps the measured cap sizes exact.
+            let capRatio: CGFloat = {
+                let probe = signFont(100)
+                return measureLine("H", font: probe, kern: 0).top / 100
+            }()
 
-                // Kern trails the final glyph too, so the typographic width
-                // carries one extra trailing space — subtract it so the
-                // visible ink is what gets centered, not ink + padding.
-                let inkWidth = max(0, lineWidth - kern)
+            /// Fits a line to its measured spec: font size from the cap
+            /// target, then per-gap letter-spacing so the INK width lands
+            /// exactly on the ink target (the replica's tracking solve).
+            /// If the font is naturally wider than the reference font at
+            /// that cap size (Overpass vs. Highway Gothic edge cases), the
+            /// size shrinks proportionally instead of squeezing glyphs —
+            /// the ink width always wins; cap height yields as little as
+            /// needed. Tracking is never negative (no glyph collisions).
+            func fit(_ text: String, cap capTarget: CGFloat, ink inkTarget: CGFloat)
+                -> (font: UIFont, kern: CGFloat) {
+                guard text.count > 1 else { return (signFont(capTarget / capRatio), 0) }
+                var font = signFont(capTarget / capRatio)
+                var natural = measureLine(text, font: font, kern: 0)
+                var width = natural.right - natural.left
+                if width > inkTarget {
+                    font = signFont(capTarget / capRatio * inkTarget / width)
+                    natural = measureLine(text, font: font, kern: 0)
+                    width = natural.right - natural.left
+                }
+                let kern = width < inkTarget
+                    ? (inkTarget - width) / CGFloat(text.count - 1)
+                    : 0
+                return (font, kern)
+            }
+
+            /// Draws a measured line with its ink centered on the face and
+            /// its BASELINE at `baselineFromTop` (top-down sheet
+            /// coordinates) — start-anchored placement, as in the replica.
+            func drawLine(_ measured: (line: CTLine, left: CGFloat, right: CGFloat, top: CGFloat),
+                          baselineFromTop: CGFloat) {
                 let ctx = UIGraphicsGetCurrentContext()
                 ctx?.saveGState()
                 ctx?.textMatrix = .identity
                 ctx?.translateBy(x: 0, y: size)
                 ctx?.scaleBy(x: 1, y: -1)
-                // Center on the white FACE (inside the border), not the
-                // canvas — the plate is letterboxed inside a square image.
-                ctx?.textPosition = CGPoint(x: faceRect.midX - inkWidth / 2, y: size - baselineFromTop)
-                CTLineDraw(line, ctx!)
+                ctx?.textPosition = CGPoint(x: faceCenterX - (measured.left + measured.right) / 2,
+                                            y: size - baselineFromTop)
+                CTLineDraw(measured.line, ctx!)
                 ctx?.restoreGState()
             }
 
-            drawInk("SPEED", font: captionFont, inkTop: stackTop, kern: captionKern)
-            drawInk("LIMIT", font: captionFont, inkTop: stackTop + captionCap + captionGap, kern: captionKern)
-            let numeralTop = stackTop + captionCap + captionGap + captionCap + numeralGap
-            let isPlaceholder = numeral == "--"
-            drawInk(numeral, font: numeralFont, inkTop: numeralTop, kern: numeralKern,
-                    centerInSlotOf: isPlaceholder ? numeralInk : nil)
-            if showUnit, let unit {
-                drawInk(unit, font: unitFont, inkTop: numeralTop + numeralInk + unitGap, kern: unitKern)
+            // ---- Legend ------------------------------------------------------
+            let placeholder = value == nil || value! <= 0
+            // Real US signs carry no unit ("35", never "35 MPH"). Metric
+            // signs (km/h) do, and metric users here historically needed the
+            // disambiguation — the unit gets its own line below the numeral,
+            // with the numeral compressed so the stack stays centered.
+            let showUnit = !placeholder
+                && unit?.isEmpty == false
+                && unit?.uppercased() != "MPH"
+
+            if placeholder {
+                // The no-data state ("--"): two rounded bars centered in
+                // the numeral band [620, 1056], sized down from the first
+                // draft so they read as dashes rather than dots at HUD
+                // scale (approved in the replica).
+                let barW = 120 * u, barH = 105 * u, off = 140 * u
+                let bandMid = sheet.minY + (620 + 436.0 / 2) * u
+                signBlack.setFill()
+                for dx in [-off, off] {
+                    let rect = CGRect(x: faceCenterX + dx - barW / 2,
+                                      y: bandMid - barH / 2,
+                                      width: barW, height: barH)
+                    UIBezierPath(roundedRect: rect, cornerRadius: 14 * u).fill()
+                }
+            } else {
+                // Captions: cap size from the measurement, tracking solved
+                // so the ink width lands exactly on the measured target.
+                let (speedFont, speedKern) = fit("SPEED", cap: 171 * u, ink: 800 * u)
+                drawLine(measureLine("SPEED", font: speedFont, kern: speedKern),
+                         baselineFromTop: sheet.minY + 283 * u)
+                let (limitFont, limitKern) = fit("LIMIT", cap: 171 * u, ink: 611 * u)
+                drawLine(measureLine("LIMIT", font: limitFont, kern: limitKern),
+                         baselineFromTop: sheet.minY + 536 * u)
+
+                // Numeral: cap 436 on the unit-less layout; compressed to
+                // 340 with the baseline pulled up to 958 when a unit line
+                // shares the face (unit baseline 1138 keeps the stack
+                // symmetric, mirroring the measured 112-unit top margin).
+                // Numeral: cap 436 on the unit-less layout; compressed to
+                // 340 with the baseline pulled up to 958 when a unit line
+                // shares the face (unit baseline 1138 keeps the stack
+                // symmetric, mirroring the measured 112-unit top margin).
+                // fit() also keeps 3-digit limits (e.g. 120 km/h) inside
+                // the face — oversized numerals shrink proportionally.
+                let numeralText = "\(value!)"
+                let numeralCap = (showUnit ? 340.0 : 436.0) * u
+                let numeralBaseline = sheet.minY + (showUnit ? 958.0 : 1056.0) * u
+                let numeralTargetW = (showUnit ? 585.0 : 750.0) * u
+                let (numeralFont, numeralKern) = fit(numeralText, cap: numeralCap, ink: numeralTargetW)
+                drawLine(measureLine(numeralText, font: numeralFont, kern: numeralKern),
+                         baselineFromTop: numeralBaseline)
+
+                if showUnit, let unit {
+                    // The unit line is sized by INK WIDTH (≈32% of the sheet)
+                    // rather than cap height: unit strings vary ("KM/H"), and
+                    // width is what keeps the line subordinate + centered
+                    // under the numeral for any string.
+                    let unitText = unit.uppercased()
+                    let probe = measureLine(unitText, font: signFont(100), kern: 0)
+                    let probeWidth = max(1, probe.right - probe.left)
+                    let unitFont = signFont(100 * (320 * u) / probeWidth)
+                    drawLine(measureLine(unitText, font: unitFont, kern: 0),
+                             baselineFromTop: sheet.minY + 1138 * u)
+                }
             }
         }.withRenderingMode(.alwaysOriginal)
     }

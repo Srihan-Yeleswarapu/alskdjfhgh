@@ -16,7 +16,14 @@ let package = Package(
         .target(
             name: "SmartSpeedCompanion",
             path: "SmartSpeedCompanion",
-            exclude: ["Configuration/Info.plist", "Resources/Entitlements/SmartSpeedCompanion.entitlements"]
+            exclude: ["Configuration/Info.plist", "Resources/Entitlements/SmartSpeedCompanion.entitlements"],
+            resources: [
+                // Overpass Bold (SIL OFL) — the Highway Gothic descendant the
+                // speed-limit sign renderer draws with. Registered at runtime
+                // from Bundle.module (CarPlayUI.registerSignFont).
+                .copy("Resources/Fonts/Overpass-Bold.ttf"),
+                .copy("Resources/Fonts/OFL.txt")
+            ]
         ),
         .testTarget(
             name: "SmartSpeedCompanionTests",
