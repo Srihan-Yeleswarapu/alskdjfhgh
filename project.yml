@@ -107,6 +107,15 @@ targets:
       # back to compile-time constants in CameraDecisionEngine if the resource is missing.
       - path: SmartSpeedCompanion/Resources/CameraTuning.json
         buildPhase: resources
+      # Custom GPX simulation route for the Developer mock-location panel
+      # (Settings → GPS ACCURACY, DEBUG/DEVELOPER_BUILD only). A 1 Hz
+      # 25→75 mph threshold ladder parsed by `MockLocationManager` in
+      # `SmartSpeedCompanion/Core/MockLocationManager.swift`. Per-file
+      # buildPhase:resources (same pattern as CameraTuning.json) so the
+      # GPX lands flat in the bundle root where
+      # Bundle.url(forResource:) finds it.
+      - path: SmartSpeedCompanion/Resources/TestRoutes.gpx
+        buildPhase: resources
       # Silent notification sound used by `BackgroundHapticBridge` so the
       # background-vibration fallback buzzes (system notification
       # vibration) without playing any audio — preserving the user's

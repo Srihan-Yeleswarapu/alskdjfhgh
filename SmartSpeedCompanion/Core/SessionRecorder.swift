@@ -182,7 +182,14 @@ public final class SessionRecorder: ObservableObject {
     }
     
     private func recordDataPoint() {
-        guard let session = currentSession, let location = locationManager.latestLocation else { return }
+        guard let location = locationManager.latestLocation else { return }
+        recordReading(from: location)
+    }
+
+    /// Shared per-fix ingestion used by both the 1 Hz timer and the debug
+    /// test hook below.
+    private func recordReading(from location: CLLocation) {
+        guard let session = currentSession else { return }
         let reading = SpeedReading(
             timestamp: .now,
             latitude: location.coordinate.latitude,
@@ -193,4 +200,13 @@ public final class SessionRecorder: ObservableObject {
         )
         session.readings.append(reading)
     }
+
+    #if DEBUG
+    /// Test hook (debug builds only): drives the exact same per-fix
+    /// ingestion as the 1 Hz recording timer without waiting on a real GPS
+    /// delivery. Used by the XCTest suite to exercise ingest/stress paths.
+    internal func recordDataPointForTesting(_ location: CLLocation) {
+        recordReading(from: location)
+    }
+    #endif
 }

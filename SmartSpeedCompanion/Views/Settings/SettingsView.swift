@@ -63,6 +63,12 @@ public struct SettingsView: View {
     @State private var showingHapticRecorder = false
     // Bulk "Download Limits" + Offline list sheets (OFFLINE section).
     @State private var showingOfflineRegions = false
+    // Developer-only mock-location sheet (GPX replay + exact-speed stream).
+    // Gated behind the same DEBUG || DEVELOPER_BUILD flag as SimulationManager
+    // and MockLocationManager so the production target never sees it.
+    #if DEBUG || DEVELOPER_BUILD
+    @State private var showingMockLocationPanel = false
+    #endif
 
     // NOTE: Previously this view hosted a deletion-flow (notice alert,
     // typed-DELETE confirm, optional reauth sheet, destructive spinner
@@ -209,6 +215,28 @@ public struct SettingsView: View {
                          "Reduced GPS accuracy (~5-10m). Significantly reduces battery drain.")
                         .font(.caption)
                         .foregroundColor(.gray)
+
+                    // Developer / Simulator only: custom GPX simulation and
+                    // mock-location controls. Compiled out of production.
+                    #if DEBUG || DEVELOPER_BUILD
+                    Button(action: { showingMockLocationPanel = true }) {
+                        HStack(spacing: 12) {
+                            Image(systemName: "location.magnifyingglass")
+                                .foregroundColor(DesignSystem.cyan)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Mock Location Panel")
+                                    .foregroundColor(.white)
+                                Text("GPX threshold replay + exact-speed streaming (Simulator)")
+                                    .font(.caption)
+                                    .foregroundColor(.gray)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .foregroundColor(.white.opacity(0.4))
+                                .font(.caption.weight(.semibold))
+                        }
+                    }
+                    #endif
                 }
                 .listRowBackground(DesignSystem.bgPanel)
 
@@ -416,6 +444,18 @@ public struct SettingsView: View {
                 .fullScreenCover(isPresented: $showingHapticRecorder) {
                     HapticRecordingView()
                 }
+                #if DEBUG || DEVELOPER_BUILD
+                // Developer mock-location sheet: TestRoutes.gpx replay
+                // transport, 25/75 mph threshold jumps, and on-demand
+                // exact-speed streaming. See Core/MockLocationManager.swift.
+                .sheet(isPresented: $showingMockLocationPanel) {
+                    MockLocationPanelView()
+                        .environmentObject(driveViewModel)
+                        .presentationDetents([.large])
+                        .presentationDragIndicator(.visible)
+                        .presentationCornerRadius(24)
+                }
+                #endif
                 // Cold-start App-Group mirror. The picker only fires
                 // `.onChange` when the user flips it; if the app ever
                 // ships with Metric as the default (or the App-Group
