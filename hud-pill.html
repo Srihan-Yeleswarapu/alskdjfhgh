@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Speedio HUD — Speed + Limit pill</title>
+<style>
+  /* Overpass = the bundled sign font. The speed numeral uses SF Rounded
+     (ui-rounded) exactly like the app's .rounded design. */
+  @import url('https://fonts.googleapis.com/css2?family=Overpass:wght@700&display=swap');
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: ui-rounded, -apple-system, 'Overpass', sans-serif;
+    background: #10151c;
+    color: #e8ebf0;
+    padding: 36px 24px 80px;
+  }
+  h1 { font-size: 22px; font-weight: 800; margin-bottom: 4px; }
+  .sub { color: #8b93a1; font-size: 13px; margin-bottom: 28px; }
+  h2 { font-size: 15px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase;
+       color: #9aa3b2; margin: 40px 0 14px; }
+
+  /* map-ish backdrop like the mockup (light streets + green parks) */
+  .map {
+    position: relative; overflow: hidden;
+    background:
+      radial-gradient(120px 90px at 12% 18%, #cfe8c6 0%, transparent 70%),
+      radial-gradient(160px 120px at 88% 78%, #cfe4c9 0%, transparent 70%),
+      radial-gradient(100px 80px at 70% 12%, #d8e9f2 0%, transparent 70%),
+      linear-gradient(160deg, #f2f3ee 0%, #e9ece6 55%, #e3e8e0 100%);
+    border-radius: 18px;
+  }
+  .map::before {  /* faint road lines */
+    content: ""; position: absolute; inset: 0;
+    background:
+      linear-gradient(75deg, transparent 47%, #ffffff 47%, #ffffff 53%, transparent 53%),
+      linear-gradient(-15deg, transparent 44%, #ffffff 44%, #ffffff 50%, transparent 50%),
+      linear-gradient(100deg, transparent 70%, #f6d9a0 70%, #f6d9a0 74%, transparent 74%);
+    opacity: .7;
+  }
+
+  /* ---------- the pill ---------- */
+  /* Every dimension is a fraction of pill WIDTH (mockup-measured):
+     h 0.575 · radius 0.14 · speed block center x 0.26 · numeral cap 0.18
+     mph cap 0.040 · divider x 0.53 · sign center x 0.755 · sign w 0.286 */
+  .pill {
+    position: absolute; background: #ffffff;
+    border-radius: calc(var(--P) * 0.14);
+    box-shadow: 0 14px 44px rgba(9, 24, 51, .22), 0 3px 10px rgba(9, 24, 51, .10);
+    height: calc(var(--P) * 0.575);
+  }
+  .numeral {
+    position: absolute; color: #091833;
+    font-weight: 800; letter-spacing: -0.02em;
+    line-height: 1; white-space: nowrap;
+  }
+  .numeral.over { color: #e0342b; }
+  .unit {
+    position: absolute; color: #aeb2bc;
+    font-weight: 700; letter-spacing: 0.02em; white-space: nowrap;
+  }
+  .divider {
+    position: absolute; left: calc(var(--P) * 0.53);
+    top: 14%; height: 72%; width: 1.5px;
+    background: #e7e9ee;
+  }
+  .signbox { position: absolute; }
+
+  .stage { position: relative; }
+</style>
+</head>
+<body>
+<h1>HUD redesign — speed + limit pill</h1>
+<div class="sub">Built from your mockup's measured proportions. The mini sign is the same calibrated R2-1 you approved.</div>
+
+<h2>Hero — as mockup (42 mph · limit 55)</h2>
+<div class="map stage" id="heroStage" style="width:560px;height:300px"></div>
+
+<h2>Variants</h2>
+<div style="display:flex; gap:22px; flex-wrap:wrap">
+  <div class="map stage" id="vKmhStage" style="width:300px;height:176px"></div>
+  <div class="map stage" id="vNoDataStage" style="width:300px;height:176px"></div>
+  <div class="map stage" id="vOverStage" style="width:300px;height:176px"></div>
+</div>
+<div class="sub" style="margin-top:8px">
+  left→right: metric (km/h · sign 90) · no-data (dashes in the sign) · overspeed (numeral in alert red — status colors carry over)
+</div>
+
+<h2>Bottom-row placement — pick one</h2>
+<div style="display:flex; gap:22px; flex-wrap:wrap">
+  <div>
+    <div class="map stage" id="rowA" style="width:430px;height:210px"></div>
+    <div class="sub" style="margin-top:8px"><b>A</b> — pill leading, START/STOP stays centered</div>
+  </div>
+  <div>
+    <div class="map stage" id="rowB" style="width:430px;height:210px"></div>
+    <div class="sub" style="margin-top:8px"><b>B</b> — pill leading, START/STOP trailing beside it</div>
+  </div>
+</div>
+<div class="sub" style="margin-top:10px">
+  Note: the tiny source label ("--" / OSM / ArcGIS) that sits under today's sign is intentionally
+  dropped inside the pill (your mockup doesn't show it) — the sign stays tappable to refresh.
+  The REC dot + timer keep floating above the pill as they do today.
+</div>
+
+<script>
+/* ================= calibrated R2-1 sign (from approved replica) ============ */
+const SPEC = {
+  W: 1000, H: 1250, margin: 10, border: 28, radius: 30,
+  ink: '#202020', paper: '#ffffff',
+  lines: [
+    { text: 'SPEED', cap: 171, inkW: 800, baseline: 283 },
+    { text: 'LIMIT', cap: 171, inkW: 611, baseline: 536 },
+    { text: '55',    cap: 436, inkW: 750, baseline: 1056 },
+  ],
+  dashes: { cap: 436, inkW: 240, baseline: 1056 },
+};
+const NS = 'http://www.w3.org/2000/svg';
+const el = (t, attrs) => { const n = document.createElementNS(NS, t);
+  for (const k in attrs) n.setAttribute(k, attrs[k]); return n; };
+
+const cal = (() => {
+  const c = document.createElement('canvas').getContext('2d');
+  const ink = (font, s, spacingPx) => {
+    c.font = font;
+    if ('letterSpacing' in c) c.letterSpacing = (spacingPx || 0) + 'px';
+    const m = c.measureText(s);
+    return { left: -m.actualBoundingBoxLeft, right: m.actualBoundingBoxRight,
+             width: m.actualBoundingBoxRight + m.actualBoundingBoxLeft,
+             cap: m.actualBoundingBoxAscent };
+  };
+  return { ink };
+})();
+
+function mountSign(parent, widthPx, value, dashes) {
+  const S = SPEC;
+  const svg = el('svg', { viewBox: `0 0 ${S.W} ${S.H}`, width: widthPx,
+    height: Math.round(widthPx * S.H / S.W), style: 'display:block' });
+  svg.appendChild(el('rect', { x: 0, y: 0, width: S.W, height: S.H, rx: S.radius, fill: S.paper }));
+  const inset = S.margin + S.border / 2;
+  svg.appendChild(el('rect', { x: inset, y: inset, width: S.W - 2*inset, height: S.H - 2*inset,
+    rx: Math.max(S.radius - S.margin - S.border/2, 2),
+    fill: 'none', stroke: S.ink, 'stroke-width': S.border }));
+  const legend = el('g', { fill: S.ink });
+  svg.appendChild(legend);
+  parent.appendChild(svg);
+  if (dashes) {
+    const g = el('g', {});
+    const barW = 120, barH = 105, r = 14, cx = S.W / 2, off = 140;
+    const bandMid = (SPEC.dashes.baseline - SPEC.dashes.cap) + SPEC.dashes.cap / 2;
+    for (const dx of [-off, off]) g.appendChild(el('rect', {
+      x: cx + dx - barW/2, y: bandMid - barH/2, width: barW, height: barH, rx: r }));
+    legend.appendChild(g);
+    return;
+  }
+  const probe = cal.ink(`700 100px 'Overpass', Arial, sans-serif`, 'H', 0);
+  S.lines.forEach(spec => {
+    const size = spec.cap / (probe.cap / 100);
+    const font = `700 ${size}px 'Overpass', Arial, sans-serif`;
+    // per-value numeral text
+    const text = spec.text === '55' ? String(value) : spec.text;
+    let m = cal.ink(font, text, 0);
+    let s = text.length > 1 ? (spec.inkW - m.width) / (text.length - 1) : 0;
+    m = cal.ink(font, text, s);
+    const t = el('text', { 'text-anchor': 'start', 'font-family': "'Overpass', Arial, sans-serif",
+      'font-weight': 700, 'font-size': size, 'letter-spacing': s,
+      x: S.W/2 - m.width/2 - m.left, y: spec.baseline });
+    t.textContent = text;
+    legend.appendChild(t);
+  });
+}
+
+/* ============================ the pill ==================================== */
+// value: number | null (no-data) · unit: 'mph'|'km/h' · over: recolor numeral
+function mountPill(parent, P, { value = 42, unit = 'mph', over = false, limit = 55, limitDashes = false }) {
+  const pill = document.createElement('div');
+  pill.className = 'pill';
+  pill.style.setProperty('--P', P + 'px');
+  pill.style.width = P + 'px';
+  parent.appendChild(pill);
+
+  // --- speed numeral: cap 0.18·P, block centered at x 0.26·P, baseline 0.565·h
+  const numText = value === null ? '––' : String(value);
+  const numProbe = cal.ink(`800 100px ui-rounded, -apple-system, Arial`, '4', 0);
+  const numSize = (P * 0.18) / (numProbe.cap / 100);
+  const num = document.createElement('div');
+  num.className = 'numeral' + (over ? ' over' : '');
+  num.textContent = numText;
+  num.style.fontSize = numSize + 'px';
+  pill.appendChild(num);
+  const numW = cal.ink(`800 ${numSize}px ui-rounded, -apple-system, Arial`, numText, 0).width;
+  const numH = pill.clientHeight; // 0.575·P
+  num.style.left = (P * 0.26 - numW / 2) + 'px';
+  num.style.top = (numH * 0.565 - numSize * 0.72) + 'px'; // ~cap-top from baseline math
+
+  // --- unit label: cap 0.040·P, same center, baseline 0.807·h
+  const unitProbe = cal.ink(`700 100px ui-rounded, -apple-system, Arial`, 'x', 0);
+  const unitSize = (P * 0.040) / (unitProbe.cap / 100);
+  const u = document.createElement('div');
+  u.className = 'unit';
+  u.textContent = unit;
+  u.style.fontSize = unitSize + 'px';
+  pill.appendChild(u);
+  const uW = cal.ink(`700 ${unitSize}px ui-rounded, -apple-system, Arial`, unit, 0).width;
+  u.style.left = (P * 0.26 - uW / 2) + 'px';
+  u.style.top = (numH * 0.807 - unitSize * 0.72) + 'px';
+
+  // --- divider
+  const d = document.createElement('div');
+  d.className = 'divider';
+  pill.appendChild(d);
+
+  // --- mini sign: width 0.286·P, center x 0.755·P, vertically centered
+  const signW = Math.round(P * 0.286);
+  const sb = document.createElement('div');
+  sb.className = 'signbox';
+  pill.appendChild(sb);
+  mountSign(sb, signW, limit, limitDashes);
+  sb.style.left = (P * 0.755 - signW / 2) + 'px';
+  sb.style.top = ((numH - signW * 1.25) / 2) + 'px';
+
+  return pill;
+}
+
+/* ============================ assembly ==================================== */
+function ready(fn) { document.fonts.ready.then(() => requestAnimationFrame(fn)); }
+
+ready(() => {
+  // Hero: mockup-scale pill (340px) on a map card
+  const hero = document.getElementById('heroStage');
+  mountPill(hero, 340, { value: 42, unit: 'mph', limit: 55 })
+    .style.cssText += 'left:110px;top:52px';
+
+  // Variants at near-HUD scale (300px pill ≈ 96pt HUD size ×3)
+  mountPill(document.getElementById('vKmhStage'), 300, { value: 42, unit: 'km/h', limit: 90 })
+    .style.cssText += 'left:120px;top:44px';
+  mountPill(document.getElementById('vNoDataStage'), 300, { value: 38, unit: 'mph', limitDashes: true })
+    .style.cssText += 'left:120px;top:44px';
+  mountPill(document.getElementById('vOverStage'), 300, { value: 63, unit: 'mph', limit: 55, over: true })
+    .style.cssText += 'left:120px;top:44px';
+
+  // Bottom-row options: pill + START/STOP capsule arrangements
+  const START = (parent, x, y) => {
+    const b = document.createElement('div');
+    b.textContent = 'START';
+    b.style.cssText = `position:absolute;left:${x}px;top:${y}px;background:#20e3d2;color:#04211f;
+      font-weight:800;font-size:19px;letter-spacing:.04em;padding:16px 30px;border-radius:999px;
+      box-shadow:0 8px 24px rgba(32,227,210,.35)`;
+    parent.appendChild(b);
+  };
+  const rowA = document.getElementById('rowA');
+  mountPill(rowA, 250, { value: 42, unit: 'mph', limit: 55 }).style.cssText += 'left:14px;top:40px';
+  START(rowA, 165, 68);
+  const rowB = document.getElementById('rowB');
+  mountPill(rowB, 250, { value: 42, unit: 'mph', limit: 55 }).style.cssText += 'left:14px;top:40px';
+  START(rowB, 285, 68);
+
+  window.__pillReady = true;
+});
+</script>
+</body>
+</html>
