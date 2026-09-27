@@ -24,6 +24,19 @@ enum CarPlayUI {
     static let indigo    = UIColor(red: 0.369, green: 0.361, blue: 0.902, alpha: 1.0) // #5E5CE6
     static let gray      = UIColor(red: 0.557, green: 0.557, blue: 0.576, alpha: 1.0) // #8E8E93
 
+    /// Numeral color for the white-faced HUD pill, by speed status. Same
+    /// semantics as DesignSystem.colorForStatus, remapped for legibility on
+    /// a white face: the neon palette was tuned against dark glass and
+    /// washes out on white (neonGreen #00FF9D ≈ 1.5:1). Safe stays mockup
+    /// navy; warning/over darken to keep ≥4:1 contrast at HUD sizes.
+    static func pillNumeralColor(for status: SpeedStatus) -> UIColor {
+        switch status {
+        case .safe:    return UIColor(red: 0.035, green: 0.094, blue: 0.20, alpha: 1) // #091833 mockup navy
+        case .warning: return UIColor(red: 0.722, green: 0.459, blue: 0.0, alpha: 1)  // #B87500
+        case .over:    return UIColor(red: 0.784, green: 0.118, blue: 0.29, alpha: 1) // #C81E4A
+        }
+    }
+
     /// Liquid-glass guidance panel tone for the map template's
     /// `guidanceBackgroundColor`. CarPlay's default is a solid red banner
     /// above the map; this replaces it with the same dark translucent glass
@@ -372,5 +385,143 @@ enum CarPlayUI {
                 }
             }
         }.withRenderingMode(.alwaysOriginal)
+    }
+
+    // MARK: - Speed + Limit HUD Pill (user mockup, 2026-09)
+
+    /// The combined HUD pill from the user's mockup: current speed over its
+    /// unit on the left, a hairline divider, and the mini R2-1 sign on the
+    /// right. One shared UIKit renderer so the phone HUD (bottom-right) and
+    /// the CarPlay top bar (top-right) are pixel-identical.
+    ///
+    /// Every dimension is a fraction of pill width P, pixel-measured from
+    /// the mockup (tmp scans, 280×161px pill):
+    ///
+    ///     height          0.575·P      corner radius 0.14·P
+    ///     face            #FFFFFF (shadow is added by the phone call site —
+    ///                     a baked one would clip at the canvas edge)
+    ///     numeral cap     0.18·P, color #091833 (status recolor on phone)
+    ///     numeral center  x 0.26·P, baseline 0.565 of pill height
+    ///     unit cap        0.040·P, color #AEB2BC, baseline 0.807 of height
+    ///     divider         x 0.53·P, 1.5pt, #E7E9EE, 14%..86% of height
+    ///     sign            width 0.286·P, center x 0.755·P, v-centered
+    ///
+    /// Text is placed by INK (canvas-actualBoundingBox math, same as the
+    /// sign renderer) so the numeral is optically centered regardless of
+    /// digit count. `value == nil` renders the em-dash placeholder. The
+    /// sign reuses `speedLimitSign` (unit-less: US regulatory signs carry
+    /// no unit), so the no-data dash state comes along for free.
+    static func speedLimitPill(speed: Int?,
+                               unit: String,
+                               limit: Int?,
+                               statusColor: UIColor? = nil,
+                               width: CGFloat) -> UIImage {
+        let P = max(48, width)
+        let H = P * 0.575
+        let format = UIGraphicsImageRendererFormat.default()
+        format.opaque = false
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: P, height: H), format: format)
+        return renderer.image { _ in
+
+            // ---- Face --------------------------------------------------------
+            let face = CGRect(x: 0, y: 0, width: P, height: H)
+            UIColor.white.setFill()
+            UIBezierPath(roundedRect: face, cornerRadius: P * 0.14).fill()
+
+            // ---- Ink-exact text engine (same as speedLimitSign) ---------------
+            func measureLine(_ text: String, font: UIFont, kern: CGFloat)
+                -> (line: CTLine, left: CGFloat, right: CGFloat, top: CGFloat) {
+                let attrs: [NSAttributedString.Key: Any] = [.font: font, .kern: kern]
+                let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attrs))
+                var left = CGFloat.greatestFiniteMagnitude
+                var right = -CGFloat.greatestFiniteMagnitude
+                var top = -CGFloat.greatestFiniteMagnitude
+                var pen: CGFloat = 0
+                for run in (CTLineGetGlyphRuns(line) as? [CTRun]) ?? [] {
+                    let count = CTRunGetGlyphCount(run)
+                    guard count > 0 else { continue }
+                    var glyphs = [CGGlyph](repeating: 0, count: count)
+                    CTRunGetGlyphs(run, CFRange(location: 0, length: count), &glyphs)
+                    var advances = [CGSize](repeating: .zero, count: count)
+                    CTRunGetAdvances(run, CFRange(location: 0, length: count), &advances)
+                    var bounds = [CGRect](repeating: .zero, count: count)
+                    CTFontGetBoundingRectsForGlyphs(font, .horizontal, glyphs, &bounds, count)
+                    for i in 0..<count {
+                        left = min(left, pen + bounds[i].minX)
+                        right = max(right, pen + bounds[i].maxX)
+                        top = max(top, bounds[i].maxY)
+                        pen += advances[i].width
+                    }
+                }
+                if left > right { left = 0; right = 0 }
+                if top < 0 { top = font.capHeight }
+                return (line, left, right, top)
+            }
+
+            /// Draws a line with its INK centered on `centerX` and its
+            /// BASELINE at `baselineFromTop` (top-down canvas coordinates).
+            func drawLine(_ measured: (line: CTLine, left: CGFloat, right: CGFloat, top: CGFloat),
+                          centerX: CGFloat, baselineFromTop: CGFloat) {
+                let ctx = UIGraphicsGetCurrentContext()
+                ctx?.saveGState()
+                ctx?.textMatrix = .identity
+                ctx?.translateBy(x: 0, y: H)
+                ctx?.scaleBy(x: 1, y: -1)
+                ctx?.textPosition = CGPoint(x: centerX - (measured.left + measured.right) / 2,
+                                            y: H - baselineFromTop)
+                CTLineDraw(measured.line, ctx!)
+                ctx?.restoreGState()
+            }
+
+            // ---- Speed numeral (cap 0.18·P @ center 0.26·P) -------------------
+            // UIKit's UIFont.systemFont has no design: parameter (that's
+            // SwiftUI-only), so the rounded variant goes through the
+            // descriptor — the same SF Rounded the app's .rounded design uses.
+            func roundedSystemFont(_ size: CGFloat, _ weight: UIFont.Weight) -> UIFont {
+                let base = UIFont.systemFont(ofSize: size, weight: weight)
+                guard let desc = base.fontDescriptor.withDesign(.rounded) else { return base }
+                return UIFont(descriptor: desc, size: size)
+            }
+            let navy = UIColor(red: 0.035, green: 0.094, blue: 0.20, alpha: 1)   // #091833
+            let unitGray = UIColor(red: 0.682, green: 0.698, blue: 0.737, alpha: 1) // #AEB2BC
+            let numeralColor = statusColor ?? navy
+            let numeralText = (speed == nil || speed! <= 0) ? "––" : "\(speed!)"
+            let numFontBase = roundedSystemFont(100, .heavy)
+            let numCapRatio = measureLine("0", font: numFontBase, kern: 0).top / 100
+            let numTargetCap = P * 0.18
+            var numFont = roundedSystemFont(numTargetCap / numCapRatio, .heavy)
+            // Oversize guard (3-digit speeds, wide placeholders): shrink to the
+            // speed block's ink budget — half the distance to the divider.
+            let numInkBudget = P * 0.42
+            let numNatural = measureLine(numeralText, font: numFont, kern: 0)
+            if numNatural.right - numNatural.left > numInkBudget {
+                numFont = roundedSystemFont(numFont.pointSize * numInkBudget / (numNatural.right - numNatural.left), .heavy)
+            }
+            let numMeasured = measureLine(numeralText, font: numFont, kern: 0)
+            // Baseline sits at 0.565 of pill height, exactly as measured.
+            drawLine(numMeasured, centerX: P * 0.26, baselineFromTop: H * 0.565)
+
+            // ---- Unit label (cap 0.040·P @ same center) -----------------------
+            let unitFontBase = roundedSystemFont(100, .bold)
+            let unitCapRatio = measureLine("x", font: unitFontBase, kern: 0).top / 100
+            let unitFont = roundedSystemFont((P * 0.040) / unitCapRatio, .bold)
+            let unitMeasured = measureLine(unit, font: unitFont, kern: 0)
+            drawLine(unitMeasured, centerX: P * 0.26, baselineFromTop: H * 0.807)
+
+            // ---- Divider ------------------------------------------------------
+            let dividerX = P * 0.53
+            let dividerRect = CGRect(x: dividerX - 0.75, y: H * 0.14, width: 1.5, height: H * 0.72)
+            unitGray.withAlphaComponent(0.45).setFill()
+            UIBezierPath(roundedRect: dividerRect, cornerRadius: 0.75).fill()
+
+            // ---- Mini sign (w 0.286·P @ center 0.755·P, v-centered) -----------
+            let signW = P * 0.286
+            let signImage = speedLimitSign(value: limit, unit: nil, size: signW)
+            // speedLimitSign letterboxes the portrait sheet in a square canvas;
+            // stamp the square centered in the pill's right chamber.
+            signImage.draw(in: CGRect(x: P * 0.755 - signW / 2,
+                                      y: (H - signW) / 2,
+                                      width: signW, height: signW))
+        }
     }
 }

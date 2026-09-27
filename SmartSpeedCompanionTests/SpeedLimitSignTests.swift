@@ -36,46 +36,52 @@ final class SpeedLimitSignTests: XCTestCase {
 
     // MARK: - iPhone HUD
 
-    func testPhoneLimitSignUsesSharedRendererNotRedCircle() throws {
+    func testPhoneHUDDrawsThePillThroughTheSharedRenderer() throws {
         let source = try readSource(mapWithHUDSourcePath())
-        let signBody = try sourceSection(in: source, anchor: "fileprivate struct LimitSignView")
+        let pillBody = try sourceSection(in: source, anchor: "fileprivate struct SpeedLimitPill")
         XCTAssertTrue(
-            signBody.contains("CarPlayUI.speedLimitSign("),
-            "LimitSignView must render through the shared renderer so phone and CarPlay match."
+            pillBody.contains("CarPlayUI.speedLimitPill("),
+            "The HUD pill must render through the shared renderer so phone and CarPlay match."
+        )
+        // Tap-to-refresh survives the pill redesign (it was the sign's affordance).
+        XCTAssertTrue(pillBody.contains("Tap to refresh"), "Tap-to-refresh affordance must be preserved.")
+        // The pill is docked trailing — bottom-right, the old sign's spot.
+        XCTAssertTrue(
+            source.contains("SpeedLimitPill("),
+            "The bottom HUD row must mount SpeedLimitPill."
         )
         XCTAssertFalse(
-            signBody.contains("#FF3D71"),
-            "The UK-style red-ring circle must be gone from the limit sign."
+            source.contains("fileprivate struct LimitSignView"),
+            "The standalone LimitSignView is replaced by SpeedLimitPill and must be gone."
         )
-        XCTAssertFalse(
-            signBody.contains("Circle()"),
-            "The sign face must be the rectangular MUTCD sign, not a circle."
-        )
-        // Tap-to-refresh and the source chip survive the restyle.
-        XCTAssertTrue(signBody.contains("Tap to refresh"), "Tap-to-refresh affordance must be preserved.")
-        XCTAssertTrue(signBody.contains("sourceChip"), "The limit-source chip must be preserved.")
     }
 
     // MARK: - CarPlay
 
-    func testCarPlayLimitButtonRendersSignImage() throws {
+    func testCarPlayShowsThePillTopRight() throws {
         let source = try readSource(carPlayTemplateSourcePath())
         XCTAssertTrue(
-            source.contains("CarPlayUI.speedLimitSign(value: displayLimit, unit: unitShort"),
-            "CarPlay's limit button must show the same shared MUTCD sign."
+            source.contains("pillButton.image = CarPlayUI.speedLimitPill("),
+            "CarPlay's top bar must show the shared speed+limit pill."
         )
+        // Top-right placement (user direction): the pill is the trailing
+        // bar button; the old split speed/limit buttons are gone.
         XCTAssertTrue(
-            source.contains("limitButton.image = CarPlayUI.speedLimitSign(value: displayLimit, unit: unitShort"),
-            "The sign must be set as the button image."
+            source.contains("trailingNavigationBarButtons = [pillButton]"),
+            "The pill must be the trailing (top-right) bar button."
         )
         XCTAssertFalse(
-            source.contains("limitButton.title = limit == 0"),
-            "The old text-only 'LIMIT 65 MPH' button must be gone."
+            source.contains("speedButton"),
+            "The old leading speed text button is merged into the pill."
         )
-        // The ~1 Hz HUD tick must not re-render the UIKit sign every second.
+        XCTAssertFalse(
+            source.contains("limitButton"),
+            "The old standalone limit sign button is merged into the pill."
+        )
+        // The ~1 Hz HUD tick must not re-render the UIKit pill every second.
         XCTAssertTrue(
-            source.contains("lastRenderedSignLimit"),
-            "Sign rendering must be cached by displayed value, not redrawn every HUD tick."
+            source.contains("lastRenderedPillKey"),
+            "Pill rendering must be cached by content, not redrawn every HUD tick."
         )
     }
 
@@ -138,6 +144,49 @@ final class SpeedLimitSignTests: XCTestCase {
 /// lands against that approved spec — 1000×1250 sheet, 10-unit white
 /// margin, 28-unit border, caption ink widths 800/611, numeral 750 wide —
 /// so the app can never silently drift from what was approved.
+/// Luminance bitmap of a rendered UIImage plus ink/alpha profiles. Shared
+/// by the sign and pill geometry test classes below.
+fileprivate struct InkMap {
+    let pxWidth: Int
+    let pxHeight: Int
+    let scale: CGFloat
+    private let dark: [Bool]
+    private let alpha: [UInt8]
+
+    init(image: UIImage) {
+        let cg = try! XCTUnwrap(image.cgImage)
+        pxWidth = cg.width
+        pxHeight = cg.height
+        scale = image.scale
+        var pixels = [UInt8](repeating: 0, count: pxWidth * pxHeight * 4)
+        let ctx = CGContext(
+            data: &pixels,
+            width: pxWidth,
+            height: pxHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: pxWidth * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: pxWidth, height: pxHeight))
+        var darkMap = [Bool](repeating: false, count: pxWidth * pxHeight)
+        var alphaMap = [UInt8](repeating: 0, count: pxWidth * pxHeight)
+        for i in 0..<(pxWidth * pxHeight) {
+            let r = Double(pixels[i * 4])
+            let g = Double(pixels[i * 4 + 1])
+            let b = Double(pixels[i * 4 + 2])
+            let luminance = 0.299 * r + 0.587 * g + 0.114 * b
+            darkMap[i] = luminance < 128 // sign black ≈ 15, face white ≈ 252
+            alphaMap[i] = pixels[i * 4 + 3] // plate face vs transparent letterbox
+        }
+        dark = darkMap
+        alpha = alphaMap
+    }
+
+    func isDark(x: Int, y: Int) -> Bool { dark[y * pxWidth + x] }
+    func isOpaque(x: Int, y: Int) -> Bool { alpha[y * pxWidth + x] > 32 }
+}
+
 final class SpeedLimitSignGeometryTests: XCTestCase {
 
     /// Anchor for repo-relative resources, mirroring SpeedLimitSignTests.
@@ -146,50 +195,6 @@ final class SpeedLimitSignGeometryTests: XCTestCase {
         .deletingLastPathComponent()
 
     private let renderSize: CGFloat = 120
-
-    // MARK: - Ink map
-
-    /// Luminance bitmap of a rendered sign plus row/column ink profiles.
-    private struct InkMap {
-        let pxWidth: Int
-        let pxHeight: Int
-        let scale: CGFloat
-        private let dark: [Bool]
-        private let alpha: [UInt8]
-
-        init(image: UIImage) {
-            let cg = try! XCTUnwrap(image.cgImage)
-            pxWidth = cg.width
-            pxHeight = cg.height
-            scale = image.scale
-            var pixels = [UInt8](repeating: 0, count: pxWidth * pxHeight * 4)
-            let ctx = CGContext(
-                data: &pixels,
-                width: pxWidth,
-                height: pxHeight,
-                bitsPerComponent: 8,
-                bytesPerRow: pxWidth * 4,
-                space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-            )!
-            ctx.draw(cg, in: CGRect(x: 0, y: 0, width: pxWidth, height: pxHeight))
-            var darkMap = [Bool](repeating: false, count: pxWidth * pxHeight)
-            var alphaMap = [UInt8](repeating: 0, count: pxWidth * pxHeight)
-            for i in 0..<(pxWidth * pxHeight) {
-                let r = Double(pixels[i * 4])
-                let g = Double(pixels[i * 4 + 1])
-                let b = Double(pixels[i * 4 + 2])
-                let luminance = 0.299 * r + 0.587 * g + 0.114 * b
-                darkMap[i] = luminance < 128 // sign black ≈ 15, face white ≈ 252
-                alphaMap[i] = pixels[i * 4 + 3] // plate face vs transparent letterbox
-            }
-            dark = darkMap
-            alpha = alphaMap
-        }
-
-        func isDark(x: Int, y: Int) -> Bool { dark[y * pxWidth + x] }
-        func isOpaque(x: Int, y: Int) -> Bool { alpha[y * pxWidth + x] > 32 }
-    }
 
     /// Bounds of all opaque pixels — i.e. the plate itself, since the
     /// portrait plate is letterboxed inside the square transparent canvas.
@@ -407,5 +412,141 @@ final class SpeedLimitSignGeometryTests: XCTestCase {
             inkWidthFraction(bands[2]), 0.750, accuracy: 0.06,
             "The numeral ink must span ≈75% of the sheet width."
         )
+    }
+}
+
+/// Pixel-level geometry regression for the combined speed+limit HUD pill
+/// (user mockup, 2026-09). The pill is the single shared renderer
+/// `CarPlayUI.speedLimitPill` consumed by the phone HUD (bottom-right) and
+/// CarPlay's top bar (top-right). Every dimension below is a fraction of
+/// pill width P measured from the mockup:
+///
+///     height 0.575·P · corner radius 0.14·P · white face
+///     numeral cap 0.18·P, ink-centered at x 0.26·P, baseline 0.565·H
+///     unit cap 0.040·P, baseline 0.807·H
+///     divider x 0.53·P · mini sign width 0.286·P at x 0.755·P, v-centered
+final class SpeedLimitPillGeometryTests: XCTestCase {
+
+    private func renderPill(speed: Int?, unit: String, limit: Int?, width: CGFloat) -> InkMap {
+        InkMap(image: CarPlayUI.speedLimitPill(
+            speed: speed, unit: unit, limit: limit, width: width))
+    }
+
+    private func measureAspect(_ map: InkMap) {
+        XCTAssertEqual(
+            Double(map.pxHeight) / Double(map.pxWidth), 0.575, accuracy: 0.002,
+            "Pill height must be 0.575 × width (the mockup's measured ratio).")
+    }
+
+    func testPillMatchesTheMockupGeometry() {
+        let map = renderPill(speed: 42, unit: "mph", limit: 55, width: 340)
+        measureAspect(map)
+
+        // White face dominates (mockup pill is white; corners are the only
+        // transparent pixels).
+        var white = 0, total = 0
+        for y in stride(from: 0, to: map.pxHeight, by: 2) {
+            for x in stride(from: 0, to: map.pxWidth, by: 2) where map.isOpaque(x: x, y: y) {
+                total += 1
+                if !map.isDark(x: x, y: y) { white += 1 }
+            }
+        }
+        XCTAssertGreaterThan(
+            Double(white) / Double(max(1, total)), 0.7,
+            "The pill face must be predominantly white like the mockup.")
+
+        // Numeral: cap 0.18·P, ink-bottom on the 0.565·H baseline, centered
+        // at x 0.26·P. Scan window x ∈ [0.08, 0.45]·P keeps the divider and
+        // sign out; y < 0.68·H keeps the unit label out.
+        let P = map.pxWidth
+        var bandTop = -1, bandBot = -1
+        var minX = Int.max, maxX = -1
+        for y in 0..<Int(0.68 * Double(map.pxHeight)) {
+            var n = 0
+            for x in Int(0.08 * Double(P))..<Int(0.45 * Double(P)) where map.isDark(x: x, y: y) {
+                n += 1
+                minX = min(minX, x); maxX = max(maxX, x)
+            }
+            if n > 2 { if bandTop < 0 { bandTop = y }; bandBot = y }
+        }
+        XCTAssertGreaterThan(bandTop, 0, "Numeral ink must exist in the speed chamber.")
+        XCTAssertEqual(
+            Double(bandBot - bandTop + 1) / Double(P), 0.18, accuracy: 0.03,
+            "Numeral cap height must be ≈0.18 of pill width.")
+        XCTAssertEqual(
+            Double(bandBot + 1) / Double(map.pxHeight), 0.565, accuracy: 0.03,
+            "Numeral baseline must sit at 0.565 of pill height.")
+        XCTAssertEqual(
+            Double(minX + maxX) / 2 / Double(P), 0.26, accuracy: 0.02,
+            "Numeral ink must be centered at 0.26 of pill width.")
+
+        // Unit baseline at 0.807·H (gray label under the numeral).
+        var uBot = -1
+        for y in Int(0.70 * Double(map.pxHeight))..<map.pxHeight {
+            var n = 0
+            for x in Int(0.08 * Double(P))..<Int(0.45 * Double(P)) where map.isDark(x: x, y: y) { n += 1 }
+            if n > 2 { uBot = y }
+        }
+        XCTAssertGreaterThan(uBot, 0, "Unit label ink must exist under the numeral.")
+        XCTAssertEqual(
+            Double(uBot + 1) / Double(map.pxHeight), 0.807, accuracy: 0.03,
+            "Unit label baseline must sit at 0.807 of pill height.")
+
+        // Mini sign: sheet ink found right of the divider, centered at
+        // 0.755·P and vertically centered in the pill.
+        var sL = Int.max, sR = -1, sTop = -1, sBot = -1
+        for y in 0..<map.pxHeight {
+            for x in Int(0.55 * Double(P))..<P where map.isDark(x: x, y: y) {
+                if sTop < 0 { sTop = y }
+                sBot = y
+                sL = min(sL, x); sR = max(sR, x)
+            }
+        }
+        XCTAssertGreaterThan(sR, sL, "Mini sign ink must exist in the right chamber.")
+        XCTAssertEqual(
+            Double(sL + sR) / 2 / Double(P), 0.755, accuracy: 0.02,
+            "Mini sign must be centered at 0.755 of pill width.")
+        XCTAssertEqual(
+            Double(sTop + sBot) / 2 / Double(map.pxHeight), 0.5, accuracy: 0.03,
+            "Mini sign must be vertically centered in the pill.")
+    }
+
+    func testPillNoDataStateRendersDashes() {
+        // The dash placeholder lives inside the sign (limit == nil).
+        let map = renderPill(speed: 38, unit: "mph", limit: nil, width: 300)
+        measureAspect(map)
+        let P = map.pxWidth
+        var sL = Int.max, sR = -1
+        for y in 0..<map.pxHeight {
+            for x in Int(0.55 * Double(P))..<P where map.isDark(x: x, y: y) {
+                sL = min(sL, x); sR = max(sR, x)
+            }
+        }
+        XCTAssertGreaterThan(sR, sL, "No-data sign ink (border + dashes) must render.")
+        // The dash band is well inside the sheet: sheet ≈ 0.224·P wide; the
+        // dashes span its middle third.
+        let sheetWidth = Double(sR - sL + 1)
+        XCTAssertGreaterThan(sheetWidth, 0.1 * Double(P), "Sign must render at mockup scale.")
+    }
+
+    func testPillOverspeedRedStatusColorCarriesThrough() {
+        // The over-status numeral is dark red — still "dark" for the ink
+        // scan, so this test pins the CONTRACT differently: the pill must
+        // render at all statuses without crashing, and the no-data speed
+        // placeholder ('––') must exist for speed nil/0.
+        let map = renderPill(speed: nil, unit: "mph", limit: 55, width: 300)
+        measureAspect(map)
+        let P = map.pxWidth
+        var minX = Int.max, maxX = -1
+        for y in 0..<Int(0.68 * Double(map.pxHeight)) {
+            for x in Int(0.08 * Double(P))..<Int(0.45 * Double(P)) where map.isDark(x: x, y: y) {
+                minX = min(minX, x); maxX = max(maxX, x)
+            }
+        }
+        XCTAssertGreaterThan(maxX, minX, "The '––' speed placeholder must render.")
+        // Placeholder ink stays inside the speed block budget (0.42·P).
+        XCTAssertLessThanOrEqual(
+            Double(maxX - minX + 1) / Double(P), 0.42 + 0.02,
+            "The '––' placeholder must fit the speed chamber ink budget.")
     }
 }

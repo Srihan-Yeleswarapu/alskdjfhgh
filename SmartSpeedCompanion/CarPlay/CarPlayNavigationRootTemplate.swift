@@ -27,14 +27,14 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
     @MainActor private var isHandlingCarPlayTrip: Bool = false
 
     // HUD Bar Buttons
-    @MainActor private var speedButton: CPBarButton!
-    @MainActor private var limitButton: CPBarButton!
+    @MainActor private var pillButton: CPBarButton!
     @MainActor private var roadNameButton: CPBarButton!
     @MainActor private var sessionTimerButton: CPBarButton!
-    // Last limit value rendered into the limit button's sign image. The HUD
-    // update runs on the ~1 Hz speed tick; caching by displayed value keeps
-    // UIKit sign rendering to actual limit changes only.
-    @MainActor private var lastRenderedSignLimit: Int = -1
+    // Content key of the last pill image rendered into the pill button
+    // (speed·limit·status·units). The HUD update runs on the ~1 Hz speed
+    // tick; caching by content keeps UIKit pill rendering to actual
+    // changes only.
+    @MainActor private var lastRenderedPillKey: String = ""
 
     // Map Buttons
     @MainActor private var searchButton: CPMapButton!
@@ -246,19 +246,21 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
         let system = SpeedFormatting.measurementSystem()
         let unitShort = SpeedFormatting.unitLabelShort(measurementSystem: system)
 
-        speedButton = CPBarButton(title: "0 \(unitShort)") { [weak self] _ in
+        // The speed+limit pill lives on the TRAILING (top-right) side per
+        // user direction; road name stays leading. (Was: speedButton +
+        // limitButton as separate leading/trailing bar buttons.)
+        pillButton = CPBarButton(title: "") { [weak self] _ in
             Task { @MainActor in self?.presentTripInfo() }
         }
         roadNameButton = CPBarButton(title: "") { _ in }
-        // Sign image arrives on the first updateHUD tick; empty title avoids
-        // a flash of "LIMIT --" text before the image lands.
-        limitButton = CPBarButton(title: "") { _ in }
+        // Pill image arrives on the first updateHUD tick; empty title avoids
+        // a flash of placeholder text before the image lands.
         sessionTimerButton = CPBarButton(title: "") { [weak self] _ in
             Task { @MainActor in self?.presentDriveDetails() }
         }
 
-        mapTemplate.leadingNavigationBarButtons = [speedButton, roadNameButton]
-        mapTemplate.trailingNavigationBarButtons = [limitButton, sessionTimerButton]
+        mapTemplate.leadingNavigationBarButtons = [roadNameButton]
+        mapTemplate.trailingNavigationBarButtons = [pillButton]
 
         // Map buttons — colored circular badges for a Google/Apple Maps look.
         // NOTE: No Settings button — settings are phone-only by design.
@@ -459,17 +461,21 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
         let system = SpeedFormatting.measurementSystem()
         let unitShort = SpeedFormatting.unitLabelShort(measurementSystem: system)
         let displayLimit = SpeedFormatting.displayLimit(forMph: limit, measurementSystem: system)
-        speedButton.title = "\(Int(speed)) \(unitShort)"
-        limitButton.title = ""
-        // US MUTCD R2-1 sign on the CarPlay top bar — the same shared
-        // renderer the phone HUD uses, so both surfaces are identical.
-        // Re-rendered only when the displayed limit actually changes (the
-        // ~1 Hz HUD tick would otherwise churn UIKit drawing every second).
-        if displayLimit != lastRenderedSignLimit {
-            lastRenderedSignLimit = displayLimit
-            // CPBarButton has no focusedImage (that's CPMapButton); the
-            // plain image is all the top-bar button needs.
-            limitButton.image = CarPlayUI.speedLimitSign(value: displayLimit, unit: unitShort, size: 40)
+        // Speed+limit pill on the top bar's trailing side (user direction:
+        // "top right"). Re-rendered only when content actually changes —
+        // the ~1 Hz HUD tick would otherwise churn UIKit drawing every
+        // second.
+        let pillKey = "\(Int(speed))|\(displayLimit)|\(status.rawValue)|\(unitShort)"
+        if pillKey != lastRenderedPillKey {
+            lastRenderedPillKey = pillKey
+            pillButton.title = ""
+            pillButton.image = CarPlayUI.speedLimitPill(
+                speed: Int(speed),
+                unit: unitShort,
+                limit: limit > 0 ? displayLimit : nil,
+                statusColor: CarPlayUI.pillNumeralColor(for: status),
+                width: 190
+            )
         }
         roadNameButton.title = (roadName?.isEmpty == false) ? roadName! : ""
         // Mirror the same snapshot to the CarPlay Now Playing screen so it
@@ -501,7 +507,7 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
             sessionTimerButton.title = ""
             sessionTimerButton.image = nil
             if mapTemplate.trailingNavigationBarButtons.contains(sessionTimerButton) {
-                mapTemplate.trailingNavigationBarButtons = [limitButton]
+                mapTemplate.trailingNavigationBarButtons = [pillButton]
             }
             return
         }
@@ -513,7 +519,7 @@ class CarPlayNavigationRootTemplate: NSObject, CPSearchTemplateDelegate, CPMapTe
             sessionTimerButton.title = String(format: "%02d:%02d", t/60, t%60)
         }
         if !mapTemplate.trailingNavigationBarButtons.contains(sessionTimerButton) {
-            mapTemplate.trailingNavigationBarButtons = [limitButton, sessionTimerButton]
+            mapTemplate.trailingNavigationBarButtons = [pillButton, sessionTimerButton]
         }
     }
 

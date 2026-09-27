@@ -197,13 +197,12 @@ public struct MapWithHUDView: View {
 
                         if !driveViewModel.isSelectingRoute && !driveViewModel.isSearchingLocally {
                             // Bottom chrome redesign — NO panel background.
-                            // The SpeedReadout (leading), START/STOP pill
-                            // (center), and LimitSignView (trailing) are three
-                            // independent floating widgets that just sit over
-                            // the map; the road-name chip floats centered
-                            // above them. All padding is handled internally by
-                            // `BottomTransparentHUD` so the parent only sets
-                            // safe-area + horizontal breathing room.
+                            // The START/STOP pill (center) and SpeedLimitPill
+                            // (trailing) are independent floating widgets that
+                            // just sit over the map; the road-name chip floats
+                            // centered above them. All padding is handled
+                            // internally by `BottomTransparentHUD` so the parent
+                            // only sets safe-area + horizontal breathing room.
                             BottomTransparentHUD(isLandscape: isLandscape)
                                 .padding(.horizontal, 16)
                                 .padding(.bottom, geo.safeAreaInsets.bottom + 12)
@@ -827,24 +826,24 @@ fileprivate struct SearchBarView: View {
 // MARK: - BottomTransparentHUD
 //
 // Replaces the legacy `SpeedHUDPill` (which forced all chrome into a
-// single glass-frosted panel). User wanted three independent floating
-// widgets so the map is fully visible underneath, so we DROP the
-// `.glassStyle()` and let the HStack naturally space its children:
-//   • [leading] SpeedReadout — huge speed number with status color, plus
-//     the unit label and an optional REC indicator above.
+// single glass-frosted panel). User wanted independent floating widgets
+// so the map is fully visible underneath, so we DROP the `.glassStyle()`
+// and let the HStack naturally space its children:
 //   • [center]  START/STOP pill — cyan capsule, red while recording.
-//   • [trailing] LimitSignView — white-faced circle with red ring + the
-//     small source-chip caption beneath.
+//   • [trailing] SpeedLimitPill — the white speed+limit pill (user
+//     mockup): current speed over its unit, hairline divider, mini R2-1
+//     sign. Docked bottom-right per user direction — this is where the
+//     old LimitSignView lived. Speed + sign merged into one widget,
+//     so the old leading SpeedReadout is gone.
 //
 // The road-name chip floats centered above the HStack, also no
 // background. Each widget is a separate fileprivate struct so the layout
 // can be tweaked individually in future iterations without churning the
 // whole bottom chrome.
 //
-// `alignment: .bottom` makes the giant speed number "sit" on the same
-// baseline as the smaller START button + smaller limit sign so the eye
-// reads them as a single horizontal row even with NO panel backdrop
-// holding them together.
+// `alignment: .bottom` makes the START button and the pill "sit" on the
+// same baseline so the eye reads them as a single horizontal row even
+// with NO panel backdrop holding them together.
 fileprivate struct BottomTransparentHUD: View {
     @EnvironmentObject var driveViewModel: DriveViewModel
     let isLandscape: Bool
@@ -867,14 +866,15 @@ fileprivate struct BottomTransparentHUD: View {
                     .frame(maxWidth: .infinity, alignment: .center)
             }
 
-            // Bottom row — three independent floating widgets over the map.
-            // SpeedReadout (leading), START/STOP with Focus badge (center), LimitSignView (trailing).
-            // The Focus button is overlaid on the top-trailing edge of the START/STOP capsule
-            // so the original 3-column balance is preserved, even on narrow screens.
+            // Bottom row — two independent floating widgets over the map.
+            // START/STOP with Focus badge (center), SpeedLimitPill (trailing,
+            // bottom-right). The Focus button is overlaid on the top-trailing
+            // edge of the START/STOP capsule so the row balance is preserved,
+            // even on narrow screens.
             HStack(alignment: .bottom, spacing: 0) {
-                SpeedReadout(isLandscape: isLandscape)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                
+                Color.clear
+                    .frame(maxWidth: .infinity)
+
                 Button(action: {
                     if driveViewModel.isRecording {
                         HapticAlertManager.playRecordingStopped()
@@ -892,7 +892,7 @@ fileprivate struct BottomTransparentHUD: View {
                             .background(driveViewModel.isRecording ? DesignSystem.alertRed : DesignSystem.cyan)
                             .clipShape(Capsule())
                             .shadow(color: (driveViewModel.isRecording ? DesignSystem.alertRed : DesignSystem.cyan).opacity(0.4), radius: 10)
-                        
+
                         // Focus Mode badge inset on the top-trailing edge of the capsule
                         Button(action: {
                             HapticAlertManager.playFocusModeEnter()
@@ -911,11 +911,15 @@ fileprivate struct BottomTransparentHUD: View {
                 }
                 .offset(x: -30)
                 .frame(maxWidth: .infinity, alignment: .center)
-                LimitSignView(
+
+                SpeedLimitPill(
+                    speed: Int(driveViewModel.speed),
+                    unit: SpeedFormatting.unitLabelShort(
+                        measurementSystem: SpeedFormatting.measurementSystem()),
                     limit: driveViewModel.limit,
-                    source: driveViewModel.speedLimitSource,
+                    status: driveViewModel.status,
                     isLandscape: isLandscape,
-                    onTap: {
+                    onTapSign: {
                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
                         Task { await driveViewModel.manualRefetchSpeedLimit() }
                     },
@@ -929,19 +933,41 @@ fileprivate struct BottomTransparentHUD: View {
     }
 }
 
-// MARK: - SpeedReadout
+// MARK: - SpeedLimitPill
 //
-// Floating speed-number widget extracted from the legacy `SpeedHUDPill`.
-// Big rounded number in the live status color, plus the unit label
-// (mph / kmh) on the right of the baseline, plus an optional REC
-// indicator dot + timer on top so the user sees recording status at a
-// glance. Lives on the leading edge of the bottom chrome row.
-fileprivate struct SpeedReadout: View {
+// The combined HUD widget from the user's mockup (2026-09): a white
+// rounded pill — current speed (status-colored navy/amber/red numeral)
+// over its unit, a hairline divider, and the mini R2-1 sign on the
+// right. Docked bottom-right (the old LimitSignView's spot) per user
+// direction.
+//
+// Rendering goes through the one shared UIKit renderer
+// (CarPlayUI.speedLimitPill) so the phone HUD and the CarPlay top bar
+// are pixel-identical and cannot drift apart. The sign inside reuses
+// CarPlayUI.speedLimitSign, so the no-data dash state comes along free.// Tap-to-refresh + the refresh pulse carry over from the old
+// LimitSignView; the tiny source label is dropped (not in the mockup).
+// The REC dot + timer float above the pill (they used to sit above the
+// old leading SpeedReadout).
+fileprivate struct SpeedLimitPill: View {
     @EnvironmentObject var driveViewModel: DriveViewModel
+    let speed: Int
+    let unit: String
+    let limit: Int
+    let status: SpeedStatus
     let isLandscape: Bool
+    /// User tapped the sign -> fire DriveViewModel.manualRefetchSpeedLimit().
+    let onTapSign: () -> Void
+    /// True while a tap-driven refetch is in flight. Drives a subtle
+    /// scale pulse so the user immediately sees their tap landed.
+    let isRefreshing: Bool
+
+    /// Pill width in points. The UIKit image is rendered at pixel scale
+    /// (points × display scale) and downscaled by .resizable() so the
+    /// raster stays crisp at any zoom/trait change.
+    private var pillWidth: CGFloat { isLandscape ? 148 : 172 }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .trailing, spacing: 4) {
             if driveViewModel.isRecording {
                 HStack(spacing: 4) {
                     Circle()
@@ -951,35 +977,37 @@ fileprivate struct SpeedReadout: View {
                         .font(.system(size: isLandscape ? 10 : 12, weight: .black))
                         .foregroundColor(DesignSystem.alertRed)
                 }
-                .padding(.bottom, 2)
+                .padding(.trailing, 6)
             }
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text("\(Int(driveViewModel.speed))")
-                    .font(.system(size: isLandscape ? 52 : 64, weight: .black, design: .rounded))
-                    .foregroundColor(DesignSystem.colorForStatus(driveViewModel.status))
-                    .contentTransition(.numericText())
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .minimumScaleFactor(0.85)
 
-                // Unit label honors Settings → UNITS so the speed
-                // readout matches the LIMIT sign to its right.
-                Text(SpeedFormatting.unitLabelShort(measurementSystem: SpeedFormatting.measurementSystem()))
-                    .font(.system(size: isLandscape ? 12 : 14, weight: .black))
-                    .foregroundColor(.white.opacity(0.4))
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
+            Button(action: onTapSign) {
+                Image(uiImage: CarPlayUI.speedLimitPill(
+                    speed: speed,
+                    unit: unit,
+                    limit: limit > 0
+                        ? SpeedFormatting.displayLimit(
+                            forMph: limit,
+                            measurementSystem: SpeedFormatting.measurementSystem())
+                        : nil,
+                    statusColor: CarPlayUI.pillNumeralColor(for: status),
+                    width: pillWidth * UIScreen.main.scale
+                ))
+                .resizable()
+                .interpolation(.high)
+                .frame(width: pillWidth, height: pillWidth * 0.575)
+                // Mockup shadow (baked shadows would clip in the renderer)
+                .shadow(color: Color(red: 0.035, green: 0.094, blue: 0.20).opacity(0.28),
+                        radius: pillWidth * 0.10, x: 0, y: pillWidth * 0.035)
+                .accessibilityLabel("Speed \(speed) \(unit). Limit \(limit > 0 ? String(limit) : "unknown"). Tap to refresh.")
             }
+            .buttonStyle(.plain)            // keep flat aesthetic when not pressed
+            .scaleEffect(isRefreshing ? 1.06 : 1.0)
+            .animation(.easeOut(duration: 0.25), value: isRefreshing)
         }
-        .frame(minWidth: isLandscape ? 110 : 132, alignment: .leading)
-        .padding(.leading, 14)
-        .padding(.trailing, 18)
-        .padding(.vertical, 10)
     }
 
     /// Same `%H:%M:%S` formatting the legacy `SpeedHUDPill.formatDuration`
-    /// used; lifted to a computed property because the speed readout is
-    /// now its own View (was nested in `SpeedHUDPill` before).
+    /// used.
     private var recDuration: String {
         let d = driveViewModel.sessionDuration
         let h = Int(d) / 3600
@@ -1025,81 +1053,6 @@ fileprivate struct MapPitchToggleButton: View {
         let next = all[(idx + 1) % all.count]
         driveViewModel.mapPitchMode = next
         DebugLogger.shared.log("MapPitch: \(next.rawValue)")
-    }
-}
-
-fileprivate struct LimitSignView: View {
-    let limit: Int
-    let source: String
-    let isLandscape: Bool
-    /// User tapped the sign -> fire DriveViewModel.manualRefetchSpeedLimit().
-    /// Passed as a closure so LimitSignView doesn't need an @EnvironmentObject
-    /// chain (the parent already holds driveViewModel).
-    let onTap: () -> Void
-    /// True while a tap-driven refetch is in flight. Drives a subtle
-    /// scale pulse so the user immediately sees their tap landed even
-    /// when the fetched answer matches the old one.
-    let isRefreshing: Bool
-
-    var body: some View {
-        Button(action: onTap) {
-            VStack(spacing: 4) {
-                // US MUTCD R2-1 regulatory sign — white face, thick black
-                // border, "SPEED LIMIT" caption and a dominant black numeral.
-                // Rendering goes through the one shared UIKit renderer
-                // (CarPlayUI.speedLimitSign) so the phone HUD and the CarPlay
-                // limit button are pixel-identical and cannot drift apart.
-                // (Replaces the previous UK/Vienna-style red-ring circle.)
-                let measurementSystem = SpeedFormatting.measurementSystem()
-                let limitUnit = SpeedFormatting.unitLabelShort(measurementSystem: measurementSystem)
-                let limitValue = SpeedFormatting.displayLimit(
-                    forMph: limit,
-                    measurementSystem: measurementSystem
-                )
-                Image(uiImage: CarPlayUI.speedLimitSign(
-                    value: limitValue,
-                    unit: limitUnit,
-                    size: isLandscape ? 52 : 64
-                ))
-                .resizable()
-                .interpolation(.high)
-                .frame(width: isLandscape ? 52 : 64, height: isLandscape ? 52 : 64)
-                .accessibilityLabel("Speed limit sign")
-
-                Text(sourceChip.text)
-                    .font(.system(size: isLandscape ? 8 : 10, weight: .bold))
-                    .foregroundColor(sourceChip.color)
-            }
-        }
-        .buttonStyle(.plain)                  // keep flat aesthetic when not pressed
-        .accessibilityLabel("Speed limit. Tap to refresh.")
-        .scaleEffect(isRefreshing ? 1.06 : 1.0)
-        .animation(.easeOut(duration: 0.25), value: isRefreshing)
-    }
-
-    /// Chip-style label + color for the active speed-limit source.
-    /// Computed property (not `let`) so it stays legal inside `var body`'s @ViewBuilder.
-    /// Keeps the legacy "DB"-keyed color when offline/SQLite is the source, distinguishes
-    /// the two live network paths, and shows an unobtrusive grey when no data is available.
-    private var sourceChip: (text: String, color: Color) {
-        switch source {
-        // Production: hide the HERE source label under the sign so end users
-        // don't see provider names. The code paths that populate `source`
-        // (SpeedLimitDataSource / SpeedLimitService) are unchanged — this
-        // only affects what the HUD renders.
-        case "Batch (HERE)":    return ("--", Color(hex: "#34D38A"))      // warm HERE cache
-        case "Live (HERE)":     return ("--", Color(hex: "#00D4FF"))      // live HERE
-        // Keep legacy-provider names truthful if an older persisted state or
-        // diagnostic path ever reaches the HUD. Hiding them as "--" made it
-        // impossible to explain why a non-HERE answer appeared under the sign.
-        case "Live (Overpass)", "OSM", "OpenStreetMap":
-            return ("OSM", Color(hex: "#74B9FF"))
-        case "Live (ArcGIS)", "ArcGIS":
-            return ("ArcGIS", Color(hex: "#A78BFA"))
-        case "DB", "DB (Recovered)":
-            return ("Local DB", Color(hex: "#A0A0B8"))
-        default:                return ("--", Color(hex: "#8888AA"))         // No Data / unknown
-        }
     }
 }
 
