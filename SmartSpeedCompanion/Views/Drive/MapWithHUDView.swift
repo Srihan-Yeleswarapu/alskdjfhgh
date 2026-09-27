@@ -866,52 +866,47 @@ fileprivate struct BottomTransparentHUD: View {
                     .frame(maxWidth: .infinity, alignment: .center)
             }
 
-            // Bottom row — two independent floating widgets over the map.
-            // START/STOP with Focus badge (center), SpeedLimitPill (trailing,
-            // bottom-right). The Focus button is overlaid on the top-trailing
-            // edge of the START/STOP capsule so the row balance is preserved,
-            // even on narrow screens.
-            HStack(alignment: .bottom, spacing: 0) {
-                Color.clear
-                    .frame(maxWidth: .infinity)
-
-                Button(action: {
-                    if driveViewModel.isRecording {
-                        HapticAlertManager.playRecordingStopped()
-                        driveViewModel.endSession()
-                    } else {
-                        HapticAlertManager.playRecordingStarted()
-                        driveViewModel.startSession()
-                    }
-                }) {
-                    ZStack(alignment: .topTrailing) {
-                        Text(driveViewModel.isRecording ? "STOP" : "START")
-                            .font(.system(size: isLandscape ? 12 : 14, weight: .black))
-                            .foregroundColor(driveViewModel.isRecording ? .white : .black)
-                            .frame(width: isLandscape ? 72 : 86, height: isLandscape ? 38 : 44)
-                            .background(driveViewModel.isRecording ? DesignSystem.alertRed : DesignSystem.cyan)
-                            .clipShape(Capsule())
-                            .shadow(color: (driveViewModel.isRecording ? DesignSystem.alertRed : DesignSystem.cyan).opacity(0.4), radius: 10)
-
-                        // Focus Mode badge inset on the top-trailing edge of the capsule
-                        Button(action: {
-                            HapticAlertManager.playFocusModeEnter()
-                            driveViewModel.isDriveFocusMode = true
-                        }) {
-                            Image(systemName: "eye.fill")
-                                .font(.system(size: isLandscape ? 7 : 8, weight: .black))
-                                .foregroundColor(.white)
-                                .padding(4)
-                                .background(Circle().fill(DesignSystem.cyan))
-                                .overlay(Circle().stroke(Color.black, lineWidth: 1.5))
-                        }
-                        .buttonStyle(.plain) // no double-highlight from nested buttons
-                        .offset(x: 6, y: -6)
-                    }
+            // Bottom row — START/STOP truly centered on the row (the old
+            // -30pt offset from the 3-column design is gone), with the
+            // SpeedLimitPill pinned bottom-right via overlay so the button's
+            // center stays the row's center regardless of pill width. The
+            // Focus badge stays inset on the capsule's top-trailing edge.
+            Button(action: {
+                if driveViewModel.isRecording {
+                    HapticAlertManager.playRecordingStopped()
+                    driveViewModel.endSession()
+                } else {
+                    HapticAlertManager.playRecordingStarted()
+                    driveViewModel.startSession()
                 }
-                .offset(x: -30)
-                .frame(maxWidth: .infinity, alignment: .center)
+            }) {
+                ZStack(alignment: .topTrailing) {
+                    Text(driveViewModel.isRecording ? "STOP" : "START")
+                        .font(.system(size: isLandscape ? 12 : 14, weight: .black))
+                        .foregroundColor(driveViewModel.isRecording ? .white : .black)
+                        .frame(width: isLandscape ? 72 : 86, height: isLandscape ? 38 : 44)
+                        .background(driveViewModel.isRecording ? DesignSystem.alertRed : DesignSystem.cyan)
+                        .clipShape(Capsule())
+                        .shadow(color: (driveViewModel.isRecording ? DesignSystem.alertRed : DesignSystem.cyan).opacity(0.4), radius: 10)
 
+                    // Focus Mode badge inset on the top-trailing edge of the capsule
+                    Button(action: {
+                        HapticAlertManager.playFocusModeEnter()
+                        driveViewModel.isDriveFocusMode = true
+                    }) {
+                        Image(systemName: "eye.fill")
+                            .font(.system(size: isLandscape ? 7 : 8, weight: .black))
+                            .foregroundColor(.white)
+                            .padding(4)
+                            .background(Circle().fill(DesignSystem.cyan))
+                            .overlay(Circle().stroke(Color.black, lineWidth: 1.5))
+                    }
+                    .buttonStyle(.plain) // no double-highlight from nested buttons
+                    .offset(x: 6, y: -6)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+            .overlay(alignment: .bottomTrailing) {
                 SpeedLimitPill(
                     speed: Int(driveViewModel.speed),
                     unit: SpeedFormatting.unitLabelShort(
@@ -925,7 +920,6 @@ fileprivate struct BottomTransparentHUD: View {
                     },
                     isRefreshing: driveViewModel.isRefreshingSpeedLimit
                 )
-                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
         // NO .glassStyle() — each widget floats independently over the
