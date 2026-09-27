@@ -31,7 +31,7 @@ final class NetworkReachabilityPolicyTests: XCTestCase {
     // MARK: - Source contracts: the offline decision points
 
     func testServiceChecksReachabilityBeforeLiveLookup() throws {
-        let source = try String(contentsOfFile: servicePath(), encoding: .utf8)
+        let source = try RepoSource.read(servicePath())
         XCTAssertTrue(source.contains("if reachability.isConnected,"),
                       "The live provider chain must be gated on NetworkReachability")
         XCTAssertTrue(source.contains("HERE live lookup skipped because NetworkReachability is disconnected"),
@@ -39,7 +39,7 @@ final class NetworkReachabilityPolicyTests: XCTestCase {
     }
 
     func testNoLegacyProviderFallbackInSource() throws {
-        let source = try String(contentsOfFile: servicePath(), encoding: .utf8)
+        let source = try RepoSource.read(servicePath())
         XCTAssertFalse(source.contains("OverpassSpeedLimitProvider()"),
                        "Overpass must never be instantiated by the driving orchestrator")
         XCTAssertFalse(source.contains("ArcGISHPMSSpeedLimitProvider()"),
@@ -52,7 +52,7 @@ final class NetworkReachabilityPolicyTests: XCTestCase {
     func testOfflineMissProducesNoDataNotStaleLabel() throws {
         // handleMiss publishes dataSource = .noData immediately; a stale
         // limit with a provider label is the offline UX failure mode.
-        let source = try String(contentsOfFile: servicePath(), encoding: .utf8)
+        let source = try RepoSource.read(servicePath())
         let missSection = try section(in: source, anchor: "private func handleMiss(")
         XCTAssertTrue(missSection.contains("dataSource = .noData"),
                       "Misses must publish No Data — a labeled stale limit misleads the driver")
@@ -64,7 +64,7 @@ final class NetworkReachabilityPolicyTests: XCTestCase {
     /// through the cache with zero network. This is the exact mechanism
     /// that keeps a returning user working offline.
     func testResponseCacheServesWithoutNetwork() async {
-        let cache = SpeedLimitResponseCache()
+        let cache = SpeedLimitResponseCache.shared
         await cache.clear()
 
         let coord = GeoCorpus.intersection
@@ -110,14 +110,14 @@ final class NetworkReachabilityPolicyTests: XCTestCase {
     // MARK: - HERE-only publication boundary
 
     func testFinalPublicationIsHEREOnly() throws {
-        let source = try String(contentsOfFile: servicePath(), encoding: .utf8)
+        let source = try RepoSource.read(servicePath())
         let finalize = try section(in: source, anchor: "private func finalizeWithContinuity(")
         XCTAssertTrue(finalize.contains(".liveHERE || outcome.source == .batchCache"),
                       "The commit boundary must reject every non-HERE source as a final answer")
     }
 
     func testCacheRejectsNonHEREWrites() async {
-        let cache = SpeedLimitResponseCache()
+        let cache = SpeedLimitResponseCache.shared
         await cache.clear()
 
         let coord = CLLocationCoordinate2D(latitude: 33.31, longitude: -111.84)

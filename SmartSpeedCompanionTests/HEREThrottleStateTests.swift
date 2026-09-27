@@ -8,11 +8,7 @@ import CoreLocation
 final class HEREThrottleStateTests: XCTestCase {
 
     private func restSource() throws -> String {
-        #if os(Windows)
-        return try String(contentsOfFile: "SmartSpeedCompanion\\Core\\HERERestSpeedLimitProvider.swift", encoding: .utf8)
-        #else
-        return try String(contentsOfFile: "SmartSpeedCompanion/Core/HERERestSpeedLimitProvider.swift", encoding: .utf8)
-        #endif
+                return try RepoSource.read("SmartSpeedCompanion/Core/HERERestSpeedLimitProvider.swift")
     }
 
     // MARK: - Constants

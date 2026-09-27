@@ -86,7 +86,7 @@ final class LocationManagerPolicyTests: XCTestCase {
     }
 
     func testBackgroundUpdatesPolicyInSource() throws {
-        let source = try String(contentsOfFile: path(), encoding: .utf8)
+        let source = try RepoSource.read(path())
         XCTAssertTrue(source.contains("let shouldEnable = enabled && isUpdatingLocation"),
                       "Background updates are only meaningful with an active GPS owner")
         XCTAssertTrue(source.contains("allowsBackgroundLocationUpdates = false"),
@@ -98,7 +98,7 @@ final class LocationManagerPolicyTests: XCTestCase {
     // MARK: - Accuracy modes
 
     func testAccuracyModeBranches() throws {
-        let source = try String(contentsOfFile: path(), encoding: .utf8)
+        let source = try RepoSource.read(path())
         XCTAssertTrue(source.contains("kCLLocationAccuracyBestForNavigation"),
                       "Navigation mode must use BestForNavigation")
         XCTAssertTrue(source.contains("kCLLocationAccuracyBest"),
@@ -126,7 +126,7 @@ final class LocationManagerPolicyTests: XCTestCase {
     }
 
     func testSimulatorAutoEngagesMockMode() throws {
-        let source = try String(contentsOfFile: path(), encoding: .utf8)
+        let source = try RepoSource.read(path())
         XCTAssertTrue(source.contains("targetEnvironment(simulator)"),
                       "Simulator builds must auto-engage mock mode (no GPS hardware)")
     }

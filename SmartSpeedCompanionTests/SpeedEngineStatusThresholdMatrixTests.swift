@@ -187,7 +187,9 @@ final class SpeedEngineStatusThresholdMatrixTests: XCTestCase {
         let engine = makeEngine(buffer: 5)
         engine.speed = 60
         engine.applyResolvedLimit(55)
-        XCTAssertEqual(engine.status, .over)
+        // 60 == threshold (55 + 5 buffer) exactly → warning under the strict-
+        // > over semantics pinned by testMatrix45LimitPlus5Buffer above.
+        XCTAssertEqual(engine.status, .warning)
 
         engine.resetForNewDrive()
         XCTAssertEqual(engine.speed, 0)

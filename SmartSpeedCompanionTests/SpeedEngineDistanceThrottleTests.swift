@@ -57,7 +57,7 @@ final class SpeedEngineDistanceThrottleTests: XCTestCase {
     /// source so a silent retune (which would multiply HERE usage) fails
     /// the suite with a message explaining the cost.
     func testThrottleDistancesArePinnedInSource() throws {
-        let source = try String(contentsOfFile: engineSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(engineSourcePath())
         XCTAssertTrue(source.contains("surfaceFetchDistance: CLLocationDistance = 80.0"),
                       "Surface fetch throttle must remain 80 m (one city block). Raising it misses turns; lowering it multiplies HERE usage.")
         XCTAssertTrue(source.contains("highwayFetchDistance: CLLocationDistance = 250.0"),
@@ -65,7 +65,7 @@ final class SpeedEngineDistanceThrottleTests: XCTestCase {
     }
 
     func testHighwayThresholdUsesMetersPerSecond20() throws {
-        let source = try String(contentsOfFile: engineSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(engineSourcePath())
         // location.speed is m/s; the highway branch must compare in m/s.
         XCTAssertTrue(source.contains("location.speed >= 20.0"),
                       "Highway throttle selection must compare CLLocation.speed (m/s) against 20")
@@ -116,7 +116,7 @@ final class SpeedEngineDistanceThrottleTests: XCTestCase {
     /// fix only. Pinned via source: `hasFiredInitialSetup` guards it, and
     /// the radius handed to performInitialSetup is 2500 m.
     func testInitialSetupIsOneShotInSource() throws {
-        let source = try String(contentsOfFile: engineSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(engineSourcePath())
         XCTAssertTrue(source.contains("hasFiredInitialSetup"),
                       "Initial batch setup must be one-shot guarded")
         XCTAssertTrue(source.contains("performInitialSetup"),
@@ -124,7 +124,7 @@ final class SpeedEngineDistanceThrottleTests: XCTestCase {
     }
 
     func testInitialSetupRadiusIsTwoPointFiveKmInSource() throws {
-        let source = try String(contentsOfFile: geofenceSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(geofenceSourcePath())
         XCTAssertTrue(source.contains("radiusMeters: 2500"),
                       "Initial setup grid must stay 2.5 km — widening it multiplies HERE batch cost per drive")
     }
@@ -170,7 +170,7 @@ final class SpeedEngineDistanceThrottleTests: XCTestCase {
     /// not mph — comparing 45 (mph) >= 20 would silently put every surface
     /// street on the highway cadence.
     func testThrottleSelectionComparesMpsNotMph() throws {
-        let source = try String(contentsOfFile: engineSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(engineSourcePath())
         let selection = try sourceSection(in: source, anchor: "let threshold: CLLocationDistance = location.speed")
         XCTAssertTrue(selection.contains("highwayFetchDistance"), "Highway branch must exist")
         XCTAssertTrue(selection.contains("surfaceFetchDistance"), "Surface branch must exist")

@@ -71,7 +71,7 @@ final class SpeedEngineLimitResolutionConcurrencyTests: XCTestCase {
     // MARK: - Source: cancellation on new fixes
 
     func testNewEligibleFixCancelsPriorTask() throws {
-        let source = try String(contentsOfFile: enginePath(), encoding: .utf8)
+        let source = try RepoSource.read(enginePath())
         XCTAssertTrue(source.contains("speedLimitResolutionTask?.cancel()"),
                       "A newer fix must cancel the in-flight resolution task")
         XCTAssertTrue(source.contains("guard !Task.isCancelled"),
@@ -79,13 +79,13 @@ final class SpeedEngineLimitResolutionConcurrencyTests: XCTestCase {
     }
 
     func testGenerationCheckedBeforePublishing() throws {
-        let source = try String(contentsOfFile: enginePath(), encoding: .utf8)
+        let source = try RepoSource.read(enginePath())
         XCTAssertTrue(source.contains("self.speedLimitResolutionGeneration == generation"),
                       "Publishing must be generation-checked (belt to the token suspenders)")
     }
 
     func testResolutionClearsLimitBeforeAwait() throws {
-        let source = try String(contentsOfFile: enginePath(), encoding: .utf8)
+        let source = try RepoSource.read(enginePath())
         let section = try section(in: source, anchor: "lastFetchLocation = location")
         XCTAssertTrue(section.contains("limit = 0"),
                       "The cleared-limit write must happen BEFORE the network await")

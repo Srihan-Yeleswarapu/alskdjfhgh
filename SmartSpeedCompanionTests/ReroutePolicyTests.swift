@@ -3,7 +3,7 @@ import XCTest
 
 final class ReroutePolicyTests: XCTestCase {
     func testAlertAcknowledgementStopsActiveAudioAndHaptics() throws {
-        let source = try String(contentsOfFile: alertEngineSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(alertEngineSourcePath())
         XCTAssertTrue(source.contains("audioAlertActive = false"))
         XCTAssertTrue(source.contains("stopCurrentToneImmediately()"))
         XCTAssertTrue(source.contains("stopSpeedingPulse()"))
@@ -18,24 +18,24 @@ final class ReroutePolicyTests: XCTestCase {
     }
 
     func testNavigationCoordinatorUsesForwardRouteMatching() throws {
-        let source = try String(contentsOfFile: sourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(sourcePath())
         XCTAssertTrue(source.contains("private func matchRoute"))
         XCTAssertTrue(source.contains("lastMatchedDistanceAlongRoute"))
     }
 
     func testStepProgressionRequiresConsecutiveFixes() throws {
-        let source = try String(contentsOfFile: sourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(sourcePath())
         XCTAssertTrue(source.contains("pendingStepAdvanceCount >= 2"))
     }
 
     func testRerouteUsesFastSingleRouteAndTrafficDepartureTime() throws {
-        let source = try String(contentsOfFile: sourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(sourcePath())
         XCTAssertTrue(source.contains("request.requestsAlternateRoutes = false"))
         XCTAssertTrue(source.contains("request.departureDate = .now"))
     }
 
     func testRerouteUsesTheLatestVehicleFixAsOrigin() throws {
-        let source = try String(contentsOfFile: sourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(sourcePath())
         XCTAssertTrue(source.contains("latestRerouteLocation?.coordinate"))
         XCTAssertTrue(source.contains("timeSinceLastReroute >= 0.75"))
     }

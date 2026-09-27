@@ -64,7 +64,7 @@ final class AlertEngineSnoozeTests: XCTestCase {
     /// stopped-car auto-expire monitor, or an explicit `cancelSnooze()` may
     /// end it.
     func testSnoozeSurvivesMonitoringTeardown() throws {
-        let source = try String(contentsOfFile: alertEngineSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(alertEngineSourcePath())
         let body = try sourceSection(in: source, anchor: "private func stopMonitoringState()")
         XCTAssertFalse(
             body.contains("cancelSnooze()"),
@@ -76,7 +76,7 @@ final class AlertEngineSnoozeTests: XCTestCase {
     /// and a snoozed episode must not re-acquire focus or restart the
     /// vibration pulse while the window is active.
     func testSnoozeReleasesAudioFocusAndSuppressesPulseRestart() throws {
-        let source = try String(contentsOfFile: alertEngineSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(alertEngineSourcePath())
         let snoozeBody = try sourceSection(in: source, anchor: "public func snoozeFor(")
         XCTAssertTrue(
             snoozeBody.contains("endAlertAudioFocus()"),

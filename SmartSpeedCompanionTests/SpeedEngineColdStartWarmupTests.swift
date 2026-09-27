@@ -46,13 +46,13 @@ final class SpeedEngineColdStartWarmupTests: XCTestCase {
         let fix = GPSFixFactory.fix(lat: 33.3062, lon: -111.8412,
                                     speedMph: 0, course: 90,
                                     timestamp: Date(timeIntervalSince1970: 9_000_000))
-        engine.processLocation(fix) // must not crash or throw
+        engine.processLocationForTesting(fix) // must not crash or throw
         XCTAssertEqual(engine.speed, 0, accuracy: 1e-9)
     }
 
     func testFirstFixDoesNotFireAlert() {
         let engine = SpeedEngine(locationManager: LocationManager())
-        engine.processLocation(GPSFixFactory.fix(
+        engine.processLocationForTesting(GPSFixFactory.fix(
             lat: 33.3062, lon: -111.8412, speedMph: 65, course: 90,
             timestamp: Date(timeIntervalSince1970: 9_000_000)))
         // No resolved limit → cannot be over → alert impossible on fix #1.
@@ -65,10 +65,10 @@ final class SpeedEngineColdStartWarmupTests: XCTestCase {
         // with the gate closed nothing goes out, but the request must be
         // scheduled exactly once — not per-property-read.
         let engine = SpeedEngine(locationManager: LocationManager())
-        engine.processLocation(GPSFixFactory.fix(
+        engine.processLocationForTesting(GPSFixFactory.fix(
             lat: 33.3062, lon: -111.8412, speedMph: 35, course: 90,
             timestamp: Date(timeIntervalSince1970: 9_000_000)))
-        engine.processLocation(GPSFixFactory.fix(
+        engine.processLocationForTesting(GPSFixFactory.fix(
             lat: 33.3062, lon: -111.8412, speedMph: 35, course: 90,
             timestamp: Date(timeIntervalSince1970: 9_000_001)))
         // Observational contract: status stays safe, no crash, engine alive.
@@ -84,7 +84,7 @@ final class SpeedEngineColdStartWarmupTests: XCTestCase {
             let p = GPSFixFactory.advance(
                 CLLocationCoordinate2D(latitude: 33.3062, longitude: -111.8412),
                 meters: Double(i) * 20, heading: 90)
-            engine.processLocation(GPSFixFactory.fix(
+            engine.processLocationForTesting(GPSFixFactory.fix(
                 lat: p.latitude, lon: p.longitude, speedMph: Double(i) * 3,
                 course: 90, timestamp: t0.addingTimeInterval(Double(i))))
         }
@@ -100,7 +100,7 @@ final class SpeedEngineColdStartWarmupTests: XCTestCase {
         let fix = GPSFixFactory.fix(lat: 33.3062, lon: -111.8412,
                                     speedMph: 45, course: 90, timestamp: t0)
         for _ in 0..<100 {
-            engine.processLocation(fix) // duplicate timestamps: idempotent-ish handling
+            engine.processLocationForTesting(fix) // duplicate timestamps: idempotent-ish handling
         }
         XCTAssertTrue(engine.speed.isFinite, "Duplicate fixes corrupted engine state")
     }

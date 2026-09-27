@@ -114,7 +114,7 @@ final class HapticPatternCatalogAndSeverityTests: XCTestCase {
     // MARK: - Engine readiness policy
 
     func testEnginePreparationIsLazilyQueued() throws {
-        let source = try String(contentsOfFile: hapticPath(), encoding: .utf8)
+        let source = try RepoSource.read(hapticPath())
         XCTAssertTrue(source.contains("isPreparingEngine"),
                       "CHHapticEngine startup must be queued off-main (launch-hang fix)")
         XCTAssertTrue(source.contains("ensureEngine") || source.contains("ensureToneEngine"),
@@ -122,7 +122,7 @@ final class HapticPatternCatalogAndSeverityTests: XCTestCase {
     }
 
     func testDeviceCapabilityQueryIsOffMain() throws {
-        let source = try String(contentsOfFile: hapticPath(), encoding: .utf8)
+        let source = try RepoSource.read(hapticPath())
         XCTAssertTrue(source.contains("capabilitiesForHardware"),
                       "Capability query documented as the XR hang fix")
     }

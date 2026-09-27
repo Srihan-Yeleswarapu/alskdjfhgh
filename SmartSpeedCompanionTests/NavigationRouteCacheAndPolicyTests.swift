@@ -4,31 +4,29 @@ import XCTest
 /// Navigation coordinator: route-lifecycle and policy paths exercised through
 /// the real NavigationCoordinator — route identity, stale-policy, and
 /// simulated-route behavior. No network, no HERE.
+@MainActor
 final class NavigationRouteCacheAndPolicyTests: XCTestCase {
 
     func testFreshCoordinatorHasNoActiveRoute() {
         let coordinator = NavigationCoordinator()
-        XCTAssertFalse(coordinator.isNavigating, "Fresh coordinator reports active navigation")
+        // Navigation state now lives on DriveViewModel; the coordinator
+        // exposes route/progress. A fresh one must have neither.
+        XCTAssertNil(coordinator.currentRoute, "Fresh coordinator reports an active route")
+        XCTAssertFalse(coordinator.isRerouting, "Fresh coordinator reports mid-reroute")
     }
 
-    func testStopNavigationClearsState() {
+    func testStopNavigationClearsState() async {
         let coordinator = NavigationCoordinator()
-        coordinator.stopNavigation()
-        XCTAssertFalse(coordinator.isNavigating)
-        XCTAssertFalse(coordinator.isRecording)
+        await coordinator.endNavigation()
+        XCTAssertNil(coordinator.currentRoute)
     }
 
-    func testRecordingIsOffByDefault() {
+    func testRepeatStopIsIdempotent() async {
         let coordinator = NavigationCoordinator()
-        XCTAssertFalse(coordinator.isRecording, "Recording must be opt-in, never default-on")
-    }
-
-    func testRepeatStopIsIdempotent() {
-        let coordinator = NavigationCoordinator()
-        coordinator.stopNavigation()
-        coordinator.stopNavigation()
-        coordinator.stopNavigation()
-        XCTAssertFalse(coordinator.isNavigating)
+        await coordinator.endNavigation()
+        await coordinator.endNavigation()
+        await coordinator.endNavigation()
+        XCTAssertNil(coordinator.currentRoute)
     }
 
     func testCameraCommitPolicyDuringNavigation() {
@@ -41,8 +39,8 @@ final class NavigationRouteCacheAndPolicyTests: XCTestCase {
             hasRoute: true, userPitchOverride: .auto))
         let idle = CameraDecisionEngine.computeTarget(from: CameraContext(
             speed: 40, speedLimit: 45, isNavigating: false, isRecording: false,
-            distanceToNextTurn: nil, instruction: "",
-            maneuverImageName: "", destinationDistance: nil,
+            distanceToNextTurn: 0, instruction: "",
+            maneuverImageName: "", destinationDistance: 0,
             hasRoute: false, userPitchOverride: .auto))
         // Route-following sits the camera lower/tighter than idle orbit.
         XCTAssertLessThan(duringNav.altitude, idle.altitude,
@@ -70,7 +68,7 @@ final class NavigationRouteCacheAndPolicyTests: XCTestCase {
             speed: 40, speedLimit: 45, isNavigating: true, isRecording: false,
             distanceToNextTurn: 250, instruction: "Turn",
             maneuverImageName: "", destinationDistance: 5000,
-            hasRoute: true, userPitchOverride: .twoPointFiveD))
+            hasRoute: true, userPitchOverride: .forced3D))
         let auto = CameraDecisionEngine.computeTarget(from: CameraContext(
             speed: 40, speedLimit: 45, isNavigating: true, isRecording: false,
             distanceToNextTurn: 250, instruction: "Turn",

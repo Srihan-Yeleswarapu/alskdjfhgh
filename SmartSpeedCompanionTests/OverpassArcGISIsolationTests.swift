@@ -77,7 +77,7 @@ final class OverpassArcGISIsolationTests: XCTestCase {
     // MARK: - Response cache write-boundary (second lock)
 
     func testResponseCacheRejectsLegacyProviderWrites() async {
-        let cache = SpeedLimitResponseCache()
+        let cache = SpeedLimitResponseCache.shared
         await cache.clear()
         let coord = CLLocationCoordinate2D(latitude: 33.33, longitude: -111.86)
 
@@ -92,7 +92,7 @@ final class OverpassArcGISIsolationTests: XCTestCase {
     }
 
     func testResponseCacheAcceptsHEREWrites() async {
-        let cache = SpeedLimitResponseCache()
+        let cache = SpeedLimitResponseCache.shared
         await cache.clear()
         let coord = CLLocationCoordinate2D(latitude: 33.34, longitude: -111.87)
 

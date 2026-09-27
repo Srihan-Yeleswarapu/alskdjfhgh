@@ -126,7 +126,7 @@ final class SpeedLimitServiceOrchestrationTests: XCTestCase {
     // MARK: - Manual refresh semantics (source policy)
 
     func testForceRefreshBypassesCachesInSource() throws {
-        let source = try String(contentsOfFile: servicePath(), encoding: .utf8)
+        let source = try RepoSource.read(servicePath())
         // Both cache layers check !forceRefresh before serving.
         let matches = source.components(separatedBy: "if !forceRefresh")
         XCTAssertGreaterThanOrEqual(matches.count - 1, 2,
@@ -134,7 +134,7 @@ final class SpeedLimitServiceOrchestrationTests: XCTestCase {
     }
 
     func testForceRefreshMissInvalidatesPoisonedAnswer() throws {
-        let source = try String(contentsOfFile: servicePath(), encoding: .utf8)
+        let source = try RepoSource.read(servicePath())
         let section = try section(in: source, anchor: "if outcome.isMiss")
         XCTAssertTrue(section.contains("if forceRefresh"),
                       "A forced refresh miss must invalidate rather than grace-hold the wrong answer")
@@ -145,13 +145,13 @@ final class SpeedLimitServiceOrchestrationTests: XCTestCase {
     // MARK: - Miss grace window (source policy)
 
     func testMissThresholdIsTwenty() throws {
-        let source = try String(contentsOfFile: servicePath(), encoding: .utf8)
+        let source = try RepoSource.read(servicePath())
         XCTAssertTrue(source.contains("missThresholdBeforeClear: Int = 20"),
                       "The 20-miss cache-clear threshold is an authoritative researched value; retuning requires a new research note")
     }
 
     func testRoadChangeShrinksGraceWindow() throws {
-        let source = try String(contentsOfFile: servicePath(), encoding: .utf8)
+        let source = try RepoSource.read(servicePath())
         XCTAssertTrue(source.contains("roadChanged ? min(3, missThresholdBeforeClear) : missThresholdBeforeClear"),
                       "A geocoder-reported road change must shrink the grace window from 20 to 3")
     }
@@ -159,7 +159,7 @@ final class SpeedLimitServiceOrchestrationTests: XCTestCase {
     // MARK: - Suspicious-jump constants
 
     func testContinuityGuardConstantsArePinned() throws {
-        let source = try String(contentsOfFile: servicePath(), encoding: .utf8)
+        let source = try RepoSource.read(servicePath())
         XCTAssertTrue(source.contains("SUSPICIOUS_JUMP_MPH: Int = 15"))
         XCTAssertTrue(source.contains("SUSPICIOUS_FETCH_HOLD: Int = 3"))
         XCTAssertTrue(source.contains("PHYSICS_TOLERANCE_MPH: Int = 10"))

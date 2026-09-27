@@ -4,12 +4,11 @@ import XCTest
 /// Real-geometry navigation: feeds polylines with genuine cumulative distance
 /// (computed via location.distance(from:)) and verifies heading/course policy
 /// decisions against true bearings — no HERE network, pure CoreLocation math.
+@MainActor
 final class NavigationGeometryHeadingPolicyTests: XCTestCase {
 
-    private func fixture(_ metersPerDegree: Double = 111_320) -> Double { metersPerDegree }
-
     private func makeLocations(along points: [(Double, Double)]) -> [CLLocation] {
-        points.map { CLLocation(coordinate: .init(latitude: $0.0, longitude: $0.1)) }
+        points.map { CLLocation(latitude: $0.0, longitude: $0.1) }
     }
 
     // MARK: - Course computation from real successive fixes

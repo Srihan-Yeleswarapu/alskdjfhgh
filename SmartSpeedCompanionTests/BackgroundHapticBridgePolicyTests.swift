@@ -18,7 +18,7 @@ final class BackgroundHapticBridgePolicyTests: XCTestCase {
         super.setUp()
         defaultsGuard = UserDefaultsTestGuard()
         defaultsGuard.snapshotNow()
-        bridge = BackgroundHapticBridge()
+        bridge = BackgroundHapticBridge.shared
     }
 
     override func tearDown() {
@@ -77,13 +77,13 @@ final class BackgroundHapticBridgePolicyTests: XCTestCase {
     // MARK: - Source contracts
 
     func testBridgeUsesSilentAlertSound() throws {
-        let source = try String(contentsOfFile: bridgePath(), encoding: .utf8)
+        let source = try RepoSource.read(bridgePath())
         XCTAssertTrue(source.contains("silent_alert"),
                       "The fallback must use the bundled silent sound — audible audio would violate the user's 'audio alerts off' choice")
     }
 
     func testBridgeReadsSpeedAndLimitFromTick() throws {
-        let source = try String(contentsOfFile: bridgePath(), encoding: .utf8)
+        let source = try RepoSource.read(bridgePath())
         let tick = try section(in: source, anchor: "public func handleSpeedingTick")
         XCTAssertTrue(tick.contains("speed"), "Tick must consume the speed argument")
         XCTAssertTrue(tick.contains("limit"), "Tick must consume the limit argument")
@@ -91,7 +91,7 @@ final class BackgroundHapticBridgePolicyTests: XCTestCase {
 
     func testBridgeResetsOnMonitoringTeardown() throws {
         // AlertEngine.stopMonitoringState calls BackgroundHapticBridge.reset.
-        let alertSource = try String(contentsOfFile: alertPath(), encoding: .utf8)
+        let alertSource = try RepoSource.read(alertPath())
         let teardown = try section(in: alertSource, anchor: "private func stopMonitoringState()")
         XCTAssertTrue(teardown.contains("BackgroundHapticBridge.shared.reset()"),
                       "Monitoring teardown must reset the bridge so stale tick state can't buzz later")

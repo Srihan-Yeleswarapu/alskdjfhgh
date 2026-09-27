@@ -13,7 +13,7 @@ import XCTest
 final class HUDChromeFeedbackTests: XCTestCase {
 
     func testEmptySearchQueryKeepsSearchModeActive() throws {
-        let source = try String(contentsOfFile: driveViewModelSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(driveViewModelSourcePath())
         let updateSearchBody = try sourceSection(in: source, anchor: "public func updateSearchQuery(_ query: String)")
         // `updateSearchQuery` clears completions/results for an empty query
         // but must NOT drop the local-search lock that keeps the HUD hidden.
@@ -28,7 +28,7 @@ final class HUDChromeFeedbackTests: XCTestCase {
     }
 
     func testEmptySearchSubmitKeepsSearchModeActive() throws {
-        let source = try String(contentsOfFile: hudSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(hudSourcePath())
         let submitBody = try sourceSection(in: source, anchor: "private func dismissKeyboardForResults")
         // Pressing the keyboard Search button with an empty field collapses
         // the keyboard but must not end the search interaction either.
@@ -39,7 +39,7 @@ final class HUDChromeFeedbackTests: XCTestCase {
     }
 
     func testDeliberateSearchExitsRemainInPlace() throws {
-        let source = try String(contentsOfFile: hudSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(hudSourcePath())
         // The only in-view exits from search mode are the X button and the
         // destination-selection path (`finishSearchSelection`).
         XCTAssertTrue(source.contains("func finishSearchSelection()"))
@@ -52,7 +52,7 @@ final class HUDChromeFeedbackTests: XCTestCase {
     }
 
     func testAddStopsShortcutRowHasNoHorizontalScrolling() throws {
-        let source = try String(contentsOfFile: hudSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(hudSourcePath())
         let rowBody = try sourceSection(in: source, anchor: "struct NavigationShortcutsRow: View")
         // TestFlight 2.3.0 (b653): swiping the Add Stops pill rubber-banded
         // it side to side. The row must not be a horizontal ScrollView.
@@ -64,8 +64,8 @@ final class HUDChromeFeedbackTests: XCTestCase {
     }
 
     func testCompassDropsBelowMeasuredTopChromeNotHardcodedEstimate() throws {
-        let liveMap = try String(contentsOfFile: liveMapSourcePath(), encoding: .utf8)
-        let hud = try String(contentsOfFile: hudSourcePath(), encoding: .utf8)
+        let liveMap = try RepoSource.read(liveMapSourcePath())
+        let hud = try RepoSource.read(hudSourcePath())
         // TestFlight 2.3.0 (b653): the hardcoded 155+35+40 drop went stale
         // whenever the card stack gained/lost a row and the compass ended up
         // under the chrome again. The drop must now come from the measured
@@ -79,7 +79,7 @@ final class HUDChromeFeedbackTests: XCTestCase {
     }
 
     func testCarPlaySearchLeadsWithPointsOfInterest() throws {
-        let source = try String(contentsOfFile: carPlayManagerSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(carPlayManagerSourcePath())
         let rankBody = try sourceSection(in: source, anchor: "nonisolated private static func poiFirstOrderingKey")
         // TestFlight 2.3.0 (b653): CarPlay search for "Tumbleweed" showed the
         // street the car was parked on while the phone's Apple Maps showed
@@ -92,7 +92,7 @@ final class HUDChromeFeedbackTests: XCTestCase {
     }
 
     func testCarPlayShowsNoStopAddedOrNavigationStartedModals() throws {
-        let root = try String(contentsOfFile: carPlayRootTemplateSourcePath(), encoding: .utf8)
+        let root = try RepoSource.read(carPlayRootTemplateSourcePath())
         // TestFlight 2.3.0 (b653): "NEVER SHOW THIS SCREEN!!" — the stop-added
         // confirmation alert must never come back, and a successful add must
         // still unwind the template stack to the map.
@@ -103,7 +103,7 @@ final class HUDChromeFeedbackTests: XCTestCase {
         XCTAssertFalse(root.contains("showStopAddedConfirmation"), "The removed confirmation path must not be reintroduced.")
         XCTAssertTrue(root.contains("unwindAfterStopAdded"), "A successful stop add must still pop back to the map template.")
         XCTAssertTrue(root.contains("showStopAddFailure"), "Failures must still surface the stop-not-added alert.")
-        let named = try String(contentsOfFile: carPlayNamedLocationsSourcePath(), encoding: .utf8)
+        let named = try RepoSource.read(carPlayNamedLocationsSourcePath())
         // Same noise class: the "Route calculated" interstitial on every
         // navigation start, also with a dead-OK pattern.
         XCTAssertFalse(

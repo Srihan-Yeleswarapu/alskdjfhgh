@@ -42,7 +42,7 @@ final class AlertEngineTransitionHapticPolicyTests: XCTestCase {
     // MARK: - Transition source contracts
 
     func testReliefHapticFiresOnOverToSafe() throws {
-        let source = try String(contentsOfFile: sourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(sourcePath())
         let section = try section(in: source, anchor: "Transition Haptics")
         XCTAssertTrue(section.contains("previousStatus == .over"),
                       "Relief path must compare against the previous .over status")
@@ -51,7 +51,7 @@ final class AlertEngineTransitionHapticPolicyTests: XCTestCase {
     }
 
     func testNearHapticFiresOnceOnSafeToWarning() throws {
-        let source = try String(contentsOfFile: sourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(sourcePath())
         let section = try section(in: source, anchor: "Anticipatory haptic")
         XCTAssertTrue(section.contains("previousStatus == .safe && status == .warning"),
                       "Near-limit haptic must fire only on the safe→warning edge")
@@ -59,14 +59,14 @@ final class AlertEngineTransitionHapticPolicyTests: XCTestCase {
     }
 
     func testTransitionHapticsRespectEnableToggle() throws {
-        let source = try String(contentsOfFile: sourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(sourcePath())
         let section = try section(in: source, anchor: "Transition Haptics")
         XCTAssertTrue(section.contains("isHapticAlertsEnabled"),
                       "Transition haptics must be gated on the haptics toggle")
     }
 
     func testUnknownLimitResetsTransitionBaseline() throws {
-        let source = try String(contentsOfFile: sourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(sourcePath())
         // The guard for unresolved limits resets previousStatus = .safe so
         // a limit-refresh wobble can't fire a bogus relief haptic.
         XCTAssertTrue(source.contains("previousStatus = .safe"),

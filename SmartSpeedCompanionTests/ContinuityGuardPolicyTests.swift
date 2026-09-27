@@ -9,11 +9,7 @@ import XCTest
 final class ContinuityGuardPolicyTests: XCTestCase {
 
     private func serviceSource() throws -> String {
-        #if os(Windows)
-        return try String(contentsOfFile: "SmartSpeedCompanion\\Core\\SpeedLimitService.swift", encoding: .utf8)
-        #else
-        return try String(contentsOfFile: "SmartSpeedCompanion/Core/SpeedLimitService.swift", encoding: .utf8)
-        #endif
+                return try RepoSource.read("SmartSpeedCompanion/Core/SpeedLimitService.swift")
     }
 
     private func section(in source: String, anchor: String) throws -> String {

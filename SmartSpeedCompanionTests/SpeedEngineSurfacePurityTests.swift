@@ -126,7 +126,7 @@ final class SpeedEngineSurfacePurityTests: XCTestCase {
             t.addTimeInterval(1)
             engine.processLocationForTesting(GPSFixFactory.fix(
                 lat: 33.3062 + Double(step) * 0.0003, lon: -111.8412,
-                speedMph: 40 + Double(step) % 20, timestamp: t))
+                speedMph: 40 + Double(step % 20), timestamp: t))
             assertInvariants(engine, step)
         }
     }
@@ -162,7 +162,7 @@ final class SpeedEngineSurfacePurityTests: XCTestCase {
 
         for step in 0..<100 {
             t.addTimeInterval(1)
-            let speed = Double(step) % 90
+            let speed = Double(step % 90)
             let limit = [0, 25, 35, 45, 55, 65, 75][step % 7]
             engine.processLocationForTesting(GPSFixFactory.fix(
                 lat: 33.3062, lon: -111.8412 + Double(step) * 0.0003,

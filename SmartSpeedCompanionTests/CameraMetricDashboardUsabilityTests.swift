@@ -9,7 +9,7 @@ import XCTest
 /// formatting is covered in SpeedFormattingUnitContractTests.
 final class CameraMetricDashboardUsabilityTests: XCTestCase {
 
-    private func context(speed: Double, limit: Double, turn: Double, dest: Double) -> CameraContext {
+    private func context(speed: Double, limit: Int, turn: Double, dest: Double) -> CameraContext {
         CameraContext(
             speed: speed, speedLimit: limit, isNavigating: true, isRecording: true,
             distanceToNextTurn: turn, instruction: "Turn left",
@@ -51,8 +51,8 @@ final class CameraMetricDashboardUsabilityTests: XCTestCase {
     // MARK: - Distance feeds never negative / NaN
 
     func testDistanceFeedsStayNonNegativeAndFinite() {
-        for turn in [-500, 0, 1, 40_000] {
-            for dest in [0, 250, 400_000] {
+        for turn in [-500.0, 0, 1, 40_000] {
+            for dest in [0.0, 250, 400_000] {
                 let c = context(speed: 45, limit: 50, turn: turn, dest: dest)
                 if turn >= 0 { XCTAssertTrue(c.distanceToNextTurn.isFinite) }
                 XCTAssertTrue(c.destinationDistance.isFinite)
@@ -88,8 +88,7 @@ final class CameraMetricDashboardUsabilityTests: XCTestCase {
     func testZeroSpeedZeroLimitEdgeProducesSaneFeed() {
         let c = context(speed: 0, limit: 0, turn: 0, dest: 0)
         XCTAssertTrue(c.speed.isFinite)
-        XCTAssertTrue(c.speedLimit.isFinite)
-        let delta = c.speed - c.speedLimit
+        let delta = c.speed - Double(c.speedLimit)
         XCTAssertEqual(delta, 0, "Standstill at unknown limit must not read as speeding")
     }
 }

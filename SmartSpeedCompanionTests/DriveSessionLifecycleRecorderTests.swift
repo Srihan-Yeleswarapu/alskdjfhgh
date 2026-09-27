@@ -125,7 +125,7 @@ final class DriveSessionLifecycleRecorderTests: XCTestCase {
     // MARK: - 30-second checkpoint timer policy
 
     func testCheckpointIntervalIsThirtySecondsInSource() throws {
-        let source = try String(contentsOfFile: sourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(sourcePath())
         XCTAssertTrue(source.contains("withTimeInterval: 30.0"),
                       "Checkpoint cadence must stay 30 s — longer loses up to a minute of a crashed drive; shorter hammers SwiftData")
     }

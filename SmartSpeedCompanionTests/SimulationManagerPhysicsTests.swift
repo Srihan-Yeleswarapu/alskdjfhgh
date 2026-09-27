@@ -102,7 +102,7 @@ final class SimulationManagerPhysicsTests: XCTestCase {
         #if os(Windows)
         let source = try String(contentsOfFile: "SmartSpeedCompanion\\Core\\SimulationManager.swift", encoding: .utf8)
         #else
-        let source = try String(contentsOfFile: "SmartSpeedCompanion/Core/SimulationManager.swift", encoding: .utf8)
+        let source = try RepoSource.read("SmartSpeedCompanion/Core/SimulationManager.swift")
         #endif
         XCTAssertTrue(source.contains("getNearestPointOnRoute"),
                       "Road snapping must flow through SimulationDataSource")

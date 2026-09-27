@@ -93,7 +93,7 @@ final class FAQContentTests: XCTestCase {
     // MARK: - Settings wiring
 
     func testSettingsViewWiresCommonQuestionsEntry() throws {
-        let source = try String(contentsOfFile: settingsSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(settingsSourcePath())
         XCTAssertTrue(
             source.contains("showingFAQ"),
             "Settings must own the FAQ sheet state."

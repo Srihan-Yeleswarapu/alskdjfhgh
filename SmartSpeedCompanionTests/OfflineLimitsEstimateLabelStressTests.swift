@@ -32,10 +32,10 @@ final class OfflineLimitsEstimateLabelStressTests: XCTestCase {
     func testSizeLabelMegabyteBoundaryIsInclusive() {
         let mb = 1024 * 1024
         // 1023.5 kB rounds inside the kB branch...
-        XCTAssertEqual(OfflineLimitsEstimate(roadCount: 1, sizeBytes: mb - 512, estimatedSeconds: 1, isReal: false).sizeLabel, "1024 kB")
+        XCTAssertEqual(OfflineLimitsEstimate(roadCount: 1, sizeBytes: Int64(mb - 512), estimatedSeconds: 1, isReal: false).sizeLabel, "1024 kB")
         // ...exactly 1 MB flips to the MB branch with one decimal.
-        XCTAssertEqual(OfflineLimitsEstimate(roadCount: 1, sizeBytes: mb, estimatedSeconds: 1, isReal: false).sizeLabel, "1.0 MB")
-        XCTAssertEqual(OfflineLimitsEstimate(roadCount: 1, sizeBytes: mb + 1, estimatedSeconds: 1, isReal: false).sizeLabel, "1.0 MB")
+        XCTAssertEqual(OfflineLimitsEstimate(roadCount: 1, sizeBytes: Int64(mb), estimatedSeconds: 1, isReal: false).sizeLabel, "1.0 MB")
+        XCTAssertEqual(OfflineLimitsEstimate(roadCount: 1, sizeBytes: Int64(mb + 1), estimatedSeconds: 1, isReal: false).sizeLabel, "1.0 MB")
         XCTAssertEqual(OfflineLimitsEstimate(roadCount: 1, sizeBytes: Int64(2.5 * Double(mb)), estimatedSeconds: 1, isReal: false).sizeLabel, "2.5 MB")
         XCTAssertEqual(OfflineLimitsEstimate(roadCount: 1, sizeBytes: Int64(25.0 * Double(mb)), estimatedSeconds: 1, isReal: false).sizeLabel, "25.0 MB")
     }

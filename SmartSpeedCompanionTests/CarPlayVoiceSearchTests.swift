@@ -13,7 +13,7 @@ final class CarPlayVoiceSearchTests: XCTestCase {
     // MARK: - Configuration
 
     func testUsageDescriptionsDeclaredForMicAndSpeech() throws {
-        let project = try String(contentsOfFile: projectYMLPath(), encoding: .utf8)
+        let project = try RepoSource.read(projectYMLPath())
         XCTAssertTrue(
             project.contains("NSMicrophoneUsageDescription: \"Speedio uses the microphone so you can speak a destination on CarPlay instead of typing it.\""),
             "CarPlay voice search needs the mic usage description or iOS blocks recording with no explanation."
@@ -25,7 +25,7 @@ final class CarPlayVoiceSearchTests: XCTestCase {
     }
 
     func testEntitlementsUntouchedByVoiceSearch() throws {
-        let entitlements = try String(contentsOfFile: entitlementsPath(), encoding: .utf8)
+        let entitlements = try RepoSource.read(entitlementsPath())
         XCTAssertFalse(
             entitlements.lowercased().contains("microphone"),
             "Mic + speech need only usage descriptions; the entitlements file must stay untouched."
@@ -35,7 +35,7 @@ final class CarPlayVoiceSearchTests: XCTestCase {
     // MARK: - CarPlay-only wiring
 
     func testMicButtonIsCarPlayOnlyAndUsesExistingUIStyle() throws {
-        let root = try String(contentsOfFile: carPlayRootTemplateSourcePath(), encoding: .utf8)
+        let root = try RepoSource.read(carPlayRootTemplateSourcePath())
         XCTAssertTrue(root.contains("voiceSearchButton = CPMapButton"), "The mic must be a CPMapButton on the CarPlay map template.")
         XCTAssertTrue(root.contains("systemName: \"mic.fill\""), "The button must use the mic glyph.")
         // Settings are phone-only by design; the mic entry point must not
@@ -50,7 +50,7 @@ final class CarPlayVoiceSearchTests: XCTestCase {
     }
 
     func testPermissionFlowCoversMicAndSpeechWithFallbackAlert() throws {
-        let root = try String(contentsOfFile: carPlayRootTemplateSourcePath(), encoding: .utf8)
+        let root = try RepoSource.read(carPlayRootTemplateSourcePath())
         let permBody = try sourceSection(in: root, anchor: "private func presentVoiceSearch()")
         XCTAssertTrue(permBody.contains("AVAudioApplication.shared.recordPermission"), "Mic permission must be checked via the modern AVAudioApplication API.")
         XCTAssertTrue(permBody.contains("AVAudioApplication.requestRecordPermission"), "First-run must request mic permission.")
@@ -62,7 +62,7 @@ final class CarPlayVoiceSearchTests: XCTestCase {
     // MARK: - Voice flow behavior
 
     func testVoiceResultsReuseSubmittedResultsListNeverAutoNavigate() throws {
-        let root = try String(contentsOfFile: carPlayRootTemplateSourcePath(), encoding: .utf8)
+        let root = try RepoSource.read(carPlayRootTemplateSourcePath())
         let handoffBody = try sourceSection(in: root, anchor: "func presentVoiceSearchResults(query: String)")
         // Same surface the keyboard Search button lands on.
         XCTAssertTrue(handoffBody.contains("presentSubmittedSearchResults"), "The transcript must flow into the same results list the keyboard Search button uses.")
@@ -75,7 +75,7 @@ final class CarPlayVoiceSearchTests: XCTestCase {
     }
 
     func testVoiceControllerSearchesTranscriptNotViewModelPublishedResults() throws {
-        let controller = try String(contentsOfFile: voiceControllerSourcePath(), encoding: .utf8)
+        let controller = try RepoSource.read(voiceControllerSourcePath())
         // The phone-side searchResults array stays untouched while driving.
         XCTAssertTrue(controller.contains("root.presentVoiceSearchResults(query:"), "The transcript must be handed to the CarPlay root template, not the phone ViewModel search state.")
         XCTAssertFalse(
@@ -85,7 +85,7 @@ final class CarPlayVoiceSearchTests: XCTestCase {
     }
 
     func testCarMicPreferredWithDefaultFallback() throws {
-        let controller = try String(contentsOfFile: voiceControllerSourcePath(), encoding: .utf8)
+        let controller = try RepoSource.read(voiceControllerSourcePath())
         XCTAssertTrue(controller.contains("enum CarPlayAudioInput"), "The mic-selection policy must be its own helper type.")
         let inputBody = try sourceSection(in: controller, anchor: "enum CarPlayAudioInput")
         XCTAssertTrue(inputBody.contains(".carAudio"), "The car's microphone port must be preferred when present.")
@@ -97,7 +97,7 @@ final class CarPlayVoiceSearchTests: XCTestCase {
     }
 
     func testSpeechUsesOnDeviceSpeechTranscriberWithFallbacks() throws {
-        let controller = try String(contentsOfFile: voiceControllerSourcePath(), encoding: .utf8)
+        let controller = try RepoSource.read(voiceControllerSourcePath())
         XCTAssertTrue(controller.contains("SpeechTranscriber(locale:"), "iOS 26 path must use the on-device SpeechTranscriber API.")
         XCTAssertTrue(controller.contains(".progressiveTranscription"), "Live utterances should use the progressive preset.")
         XCTAssertTrue(controller.contains("SpeechTranscriber.isAvailable"), "Device capability must be checked before starting.")
@@ -109,7 +109,7 @@ final class CarPlayVoiceSearchTests: XCTestCase {
     }
 
     func testListeningAlertHasStopAndCancelAndSpokenCue() throws {
-        let controller = try String(contentsOfFile: voiceControllerSourcePath(), encoding: .utf8)
+        let controller = try RepoSource.read(voiceControllerSourcePath())
         let alertBody = try sourceSection(in: controller, anchor: "private func presentListeningAlert()")
         XCTAssertTrue(alertBody.contains("CPAlertTemplate"), "Listening must be presented as a CarPlay alert template.")
         XCTAssertTrue(alertBody.contains("\"Stop\""), "The driver must be able to stop early.")
@@ -118,7 +118,7 @@ final class CarPlayVoiceSearchTests: XCTestCase {
     }
 
     func testStopConditionsSilenceAndHardCap() throws {
-        let controller = try String(contentsOfFile: voiceControllerSourcePath(), encoding: .utf8)
+        let controller = try RepoSource.read(voiceControllerSourcePath())
         let timersBody = try sourceSection(in: controller, anchor: "private func startTimers()")
         XCTAssertTrue(timersBody.contains("silenceTimeout"), "Silence must end the utterance.")
         XCTAssertTrue(timersBody.contains("hardCap"), "A hard cap must bound every listening session.")
@@ -127,7 +127,7 @@ final class CarPlayVoiceSearchTests: XCTestCase {
     }
 
     func testTeardownDeactivatesAudioSessionAndNotifiesOthers() throws {
-        let controller = try String(contentsOfFile: voiceControllerSourcePath(), encoding: .utf8)
+        let controller = try RepoSource.read(voiceControllerSourcePath())
         let teardownBody = try sourceSection(in: controller, anchor: "private func teardownAudio()")
         XCTAssertTrue(teardownBody.contains("removeTap(onBus: 0)"), "The input tap must be removed or the audio engine leaks.")
         XCTAssertTrue(teardownBody.contains("setActive(false, options: .notifyOthersOnDeactivation)"), "Deactivation must notify others so navigation TTS recovers cleanly.")
@@ -135,7 +135,7 @@ final class CarPlayVoiceSearchTests: XCTestCase {
     }
 
     func testStaleResponseGuardAndSingleVoiceController() throws {
-        let root = try String(contentsOfFile: carPlayRootTemplateSourcePath(), encoding: .utf8)
+        let root = try RepoSource.read(carPlayRootTemplateSourcePath())
         XCTAssertTrue(root.contains("private var voiceSearchController: CarPlayVoiceSearchController?"), "One controller instance guards double-taps while the listening alert is up.")
         let beginBody = try sourceSection(in: root, anchor: "private func presentVoiceSearch()")
         XCTAssertTrue(beginBody.contains("guard voiceSearchController == nil else { return }"), "A second mic tap during listening must be ignored.")
@@ -195,7 +195,7 @@ final class CarPlayVoiceSearchTests: XCTestCase {
             "SmartSpeedCompanion/Views/Drive/LiveMapView.swift"
         ]
         return try paths.map { p in
-            let source = try String(contentsOfFile: p, encoding: .utf8)
+            let source = try RepoSource.read(p)
             return (p, source)
         }
     }

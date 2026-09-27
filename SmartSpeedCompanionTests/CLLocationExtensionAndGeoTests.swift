@@ -113,7 +113,7 @@ final class CLLocationExtensionAndGeoTests: XCTestCase {
 
     func testMphToMsToMphRoundTrip() {
         for mph in stride(from: 5, through: 100, by: 5) {
-            let ms = mph * GPSFixFactory.mphToMs
+            let ms = Double(mph) * GPSFixFactory.mphToMs
             let back = ms * 2.23694
             assertMph(back, equals: Double(mph), "Round trip \(mph) mph drifted")
         }

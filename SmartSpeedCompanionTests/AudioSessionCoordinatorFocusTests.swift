@@ -15,7 +15,7 @@ final class AudioSessionCoordinatorFocusTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        coordinator = AudioSessionCoordinator()
+        coordinator = AudioSessionCoordinator.shared
     }
 
     override func tearDown() {
@@ -57,13 +57,13 @@ final class AudioSessionCoordinatorFocusTests: XCTestCase {
     // MARK: - Source contracts (the design that ended the tug-of-war)
 
     func testCoordinatorIsProcessWideSingleton() throws {
-        let source = try String(contentsOfFile: sourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(sourcePath())
         XCTAssertTrue(source.contains("static let shared") || source.contains("public static let shared"),
                       "The coordinator must be a singleton — per-owner sessions recreate the CarPlay tug-of-war")
     }
 
     func testAlertEngineUsesCoordinatorNotDirectSessionConfig() throws {
-        let alertSource = try String(contentsOfFile: alertPath(), encoding: .utf8)
+        let alertSource = try RepoSource.read(alertPath())
         // The AlertEngine's init must NOT configure AVAudioSession directly.
         let initSection = try section(in: alertSource, anchor: "public init(speedEngine: SpeedEngine)")
         XCTAssertFalse(initSection.contains("AVAudioSession.sharedInstance().setCategory"),
@@ -73,13 +73,13 @@ final class AudioSessionCoordinatorFocusTests: XCTestCase {
     }
 
     func testNavAnnouncerUsesCueLeases() throws {
-        let navSource = try String(contentsOfFile: navPath(), encoding: .utf8)
+        let navSource = try RepoSource.read(navPath())
         XCTAssertTrue(navSource.contains("AudioSessionCoordinator.shared.beginCue()"),
                       "Speech cues must acquire focus through the coordinator")
     }
 
     func testAnnouncerHoldsSingleCuePerUtterance() throws {
-        let navSource = try String(contentsOfFile: navPath(), encoding: .utf8)
+        let navSource = try RepoSource.read(navPath())
         XCTAssertTrue(navSource.contains("cueHeld"),
                       "One audio-focus cue per utterance; released from the speech delegate after finish")
     }
@@ -87,14 +87,14 @@ final class AudioSessionCoordinatorFocusTests: XCTestCase {
     // MARK: - Announcement queue policy
 
     func testPendingMessagePolicyKeepsNewestOnly() throws {
-        let navSource = try String(contentsOfFile: navPath(), encoding: .utf8)
+        let navSource = try RepoSource.read(navPath())
         let announce = try section(in: navSource, anchor: "func announce(_ message: String)")
         XCTAssertTrue(announce.contains("pendingMessages = [expandedMessage]"),
                       "A new cue while speaking replaces the queue — the latest nav state is the useful one")
     }
 
     func testVoiceDisabledShortCircuitsAnnouncements() throws {
-        let navSource = try String(contentsOfFile: navPath(), encoding: .utf8)
+        let navSource = try RepoSource.read(navPath())
         let announce = try section(in: navSource, anchor: "func announce(_ message: String)")
         XCTAssertTrue(announce.contains("voiceNavEnabled"),
                       "The voice toggle must gate announcements before any synthesizer work")

@@ -16,7 +16,7 @@ final class SiriDestinationCommandsTests: XCTestCase {
     // MARK: - The Apple Maps fallthrough fix
 
     func testNavigateIntentUsesEntityParameterResolvableInPhrases() throws {
-        let source = try String(contentsOfFile: intentsSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(intentsSourcePath())
         // Entity parameter (not a plain String) — the thing that makes the
         // phrase donatable at all.
         XCTAssertTrue(
@@ -49,7 +49,7 @@ final class SiriDestinationCommandsTests: XCTestCase {
     }
 
     func testDestinationEntityResolvesSpokenPlacesAndRecents() throws {
-        let source = try String(contentsOfFile: destinationEntitySourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(destinationEntitySourcePath())
         XCTAssertTrue(source.contains("struct DestinationEntity: AppEntity"), "The destination parameter must be a real AppEntity.")
         XCTAssertTrue(source.contains("struct DestinationEntityQuery: EntityStringQuery"), "Siri resolves spoken places through an EntityStringQuery.")
         // Resolution pipeline: region-biased MapKit search without touching
@@ -61,7 +61,7 @@ final class SiriDestinationCommandsTests: XCTestCase {
     }
 
     func testAllTenShortcutSlotsUsedWithNavigationFirst() throws {
-        let source = try String(contentsOfFile: intentsSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(intentsSourcePath())
         let count = source.components(separatedBy: "AppShortcut(").count - 1
         XCTAssertEqual(count, 10, "App Shortcuts are hard-capped at 10 per app; the provider must use exactly 10 slots.")
         // The previously-undonated navigation intent must now hold a slot.
@@ -69,14 +69,14 @@ final class SiriDestinationCommandsTests: XCTestCase {
         XCTAssertTrue(source.contains("intent: StopNavigationIntent()"), "Stop navigation should also be a first-class spoken command.")
         // The dropped slot's intent must still exist (name-invocable), just
         // without a phrase donation.
-        let summary = try String(contentsOfFile: summaryIntentsSourcePath(), encoding: .utf8)
+        let summary = try RepoSource.read(summaryIntentsSourcePath())
         XCTAssertTrue(summary.contains("struct GetTodayDriveSummaryIntent"), "The today-summary intent must remain invocable by name.")
     }
 
     // MARK: - Preposition variants ("in / through / from / using Speedio")
 
     func testDestinationPhrasesCoverPrepositionVariants() throws {
-        let source = try String(contentsOfFile: intentsSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(intentsSourcePath())
         let providerBody = try sourceSection(in: source, anchor: "struct SpeedAppShortcutsProvider")
         for variant in ["in \\(.applicationName)", "through \\(.applicationName)", "from \\(.applicationName)", "using \\(.applicationName)", "with \\(.applicationName)", "via \\(.applicationName)"] {
             XCTAssertTrue(
@@ -92,7 +92,7 @@ final class SiriDestinationCommandsTests: XCTestCase {
     }
 
     func testStopNavigationIntentEndsNavigationOnlyWhenActive() throws {
-        let source = try String(contentsOfFile: intentsSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(intentsSourcePath())
         let body = try sourceSection(in: source, anchor: "struct StopNavigationIntent")
         XCTAssertTrue(body.contains("guard viewModel.isNavigating"), "Stop must no-op cleanly when not navigating.")
         XCTAssertTrue(body.contains("await viewModel.endNavigation()"), "Stop must end the app's own navigation.")
@@ -101,7 +101,7 @@ final class SiriDestinationCommandsTests: XCTestCase {
     // MARK: - Provider metadata accuracy
 
     func testSiriUsageDescriptionCoversDestinationCommands() throws {
-        let project = try String(contentsOfFile: projectYMLPath(), encoding: .utf8)
+        let project = try RepoSource.read(projectYMLPath())
         XCTAssertTrue(
             project.contains("set a destination, stop navigation"),
             "The Siri usage description should reflect the new destination commands."

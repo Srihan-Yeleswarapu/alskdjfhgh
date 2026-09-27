@@ -16,7 +16,7 @@ final class HEREGeofenceManagerTriggerTests: XCTestCase {
     override func setUp() {
         super.setUp()
         hereGate = HERECredentialsGate(); hereGate.close()
-        manager = HEREGeofenceManager()
+        manager = HEREGeofenceManager.shared
     }
 
     override func tearDown() {
@@ -28,18 +28,18 @@ final class HEREGeofenceManagerTriggerTests: XCTestCase {
     // MARK: - Constants (source-pinned; they govern batch volume)
 
     func testRecheckDistanceIs100MetersInSource() throws {
-        let source = try String(contentsOfFile: sourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(sourcePath())
         XCTAssertTrue(source.contains("recheckDistanceMeters: Double = 100"),
                       "Recheck gate must stay 100 m — halving it doubles batch-check frequency")
     }
 
     func testCacheCheckRadiusIs100MetersInSource() throws {
-        let source = try String(contentsOfFile: sourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(sourcePath())
         XCTAssertTrue(source.contains("cacheCheckRadiusMeters: Double = 100"))
     }
 
     func testInitialSetupUsesWiderRadiusThanManualRefresh() throws {
-        let source = try String(contentsOfFile: sourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(sourcePath())
         XCTAssertTrue(source.contains("radiusMeters: 2500"),
                       "Initial setup: 2.5 km grid")
         // manualRefresh and the background fetch use the 1500 m default.
@@ -49,13 +49,13 @@ final class HEREGeofenceManagerTriggerTests: XCTestCase {
     // MARK: - In-flight guard (source contract)
 
     func testBackgroundFetchGuardPreventsPileUp() throws {
-        let source = try String(contentsOfFile: sourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(sourcePath())
         XCTAssertTrue(source.contains("guard !isFetching else { return }"),
                       "A second batch fetch must not start while one is in flight")
     }
 
     func testCoverageUpdatesOnFetchCompletion() throws {
-        let source = try String(contentsOfFile: sourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(sourcePath())
         XCTAssertTrue(source.contains("updateCoverage(at: coordinate)"),
                       "Coverage must refresh after every fetch attempt (success or failure)")
     }

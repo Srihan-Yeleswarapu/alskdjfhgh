@@ -12,6 +12,7 @@ import AVFoundation
 /// DefaultVoiceAnnouncer is exercised only for its non-audio surface
 /// (disabled-flag guard, idle state, deactivation safety) so the suite never
 /// depends on synthesizer timing.
+@MainActor
 final class VoiceAbbreviationExpansionTests: XCTestCase {
 
     private func expand(_ s: String) -> String {
@@ -110,8 +111,8 @@ final class VoiceAbbreviationExpansionTests: XCTestCase {
     // MARK: - DefaultVoiceAnnouncer guard rails (no synthesizer dependency)
 
     func testAnnouncerIdleBeforeAnyCue() {
-        let announcer = DefaultVoiceAnnouncer()
-        XCTAssertFalse(announcer.isSpeaking, "a fresh announcer must not report speaking")
+        let a = DefaultVoiceAnnouncer()
+        XCTAssertFalse(a.isSpeaking, "a fresh announcer must not report speaking")
     }
 
     func testAnnouncerRespectsVoiceNavDisabledWithoutAudio() {
@@ -120,15 +121,15 @@ final class VoiceAbbreviationExpansionTests: XCTestCase {
         defer { guard_.restore() }
         UserDefaults.standard.set(false, forKey: "voiceNavEnabled")
 
-        let announcer = DefaultVoiceAnnouncer()
-        announcer.announce("Turn onto North Central Avenue")
+        let a = DefaultVoiceAnnouncer()
+        a.announce("Turn onto North Central Avenue")
         // The disabled guard returns before the synthesizer is touched.
-        XCTAssertFalse(announcer.isSpeaking)
+        XCTAssertFalse(a.isSpeaking)
     }
 
     func testDeactivateSessionBeforeAnyCueIsSafe() {
-        let announcer = DefaultVoiceAnnouncer()
-        announcer.deactivateSession()
-        XCTAssertFalse(announcer.isSpeaking)
+        let a = DefaultVoiceAnnouncer()
+        a.deactivateSession()
+        XCTAssertFalse(a.isSpeaking)
     }
 }

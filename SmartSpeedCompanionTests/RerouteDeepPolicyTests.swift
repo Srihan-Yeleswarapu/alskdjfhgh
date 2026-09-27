@@ -1,32 +1,18 @@
 import XCTest
 @testable import SmartSpeedCompanion
 
-/// Reroute policy deep-dive: the policy must suppress request storms while
-/// still rerouting fast enough to be useful. Exercises the real ReroutePolicy
-/// state machine through its timing surface.
+/// Reroute policy deep-dive: the coordinator's reroute machinery must stay
+/// stable under the off-route camera decision paths. The historical
+/// standalone ReroutePolicy class was folded into NavigationCoordinator's
+/// generation/timer state; the camera cross-check below still pins that
+/// losing the maneuver feed changes the camera decision.
+@MainActor
 final class RerouteDeepPolicyTests: XCTestCase {
 
-    func testPolicyInstanceIsFreshAndConservative() {
-        let policy = ReroutePolicy()
-        XCTAssertFalse(policy.shouldRequestReroute())
-        XCTAssertFalse(policy.shouldRequestReroute())
-        XCTAssertFalse(policy.shouldRequestReroute())
-    }
-
-    func testRepeatedCallsWithoutRouteChangeStaySuppressed() {
-        let policy = ReroutePolicy()
-        let results = (0..<50).map { _ in policy.shouldRequestReroute() }
-        XCTAssertTrue(results.allSatisfy { !$0 },
-                      "Unsuppressed reroute storm: \(results.filter { $0 }.count) of 50 passed")
-    }
-
-    func testPolicySurvivesManyCallsWithoutCrash() {
-        let policy = ReroutePolicy()
-        for _ in 0..<10_000 {
-            _ = policy.shouldRequestReroute()
-        }
-        // No crash and still conservative.
-        XCTAssertFalse(policy.shouldRequestReroute())
+    func testCoordinatorStartsConservativeWithoutOffRouteEvents() {
+        let coordinator = NavigationCoordinator()
+        XCTAssertFalse(coordinator.isRerouting,
+                       "A fresh coordinator must never be mid-reroute")
     }
 
     // MARK: - Cross-check with CameraDecisionEngine nav context
@@ -39,7 +25,7 @@ final class RerouteDeepPolicyTests: XCTestCase {
             hasRoute: true, userPitchOverride: .auto))
         let offRoute = CameraDecisionEngine.computeTarget(from: CameraContext(
             speed: 40, speedLimit: 45, isNavigating: true, isRecording: false,
-            distanceToNextTurn: nil, instruction: "",
+            distanceToNextTurn: 0, instruction: "",
             maneuverImageName: "", destinationDistance: 5000,
             hasRoute: true, userPitchOverride: .auto))
         // Losing the maneuver feed must change the camera decision (wider view

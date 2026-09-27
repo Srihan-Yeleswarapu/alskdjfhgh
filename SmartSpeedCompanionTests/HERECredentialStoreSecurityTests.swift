@@ -101,7 +101,7 @@ final class HERECredentialStoreSecurityTests: XCTestCase {
     // MARK: - Geoapify store
 
     func testGeoapifyKeyLifecycle() {
-        let store = GeoapifyCredentialStore()
+        let store = GeoapifyCredentialStore.shared
         let had = store.hasApiKey()
         let original = store.loadApiKey()
         defer {

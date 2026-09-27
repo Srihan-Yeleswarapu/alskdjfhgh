@@ -31,15 +31,16 @@ final class CameraPerformanceBudgetTests: XCTestCase {
     }
 
     func testDecisionEngineOutputStableAcrossRepeatRuns() {
-        func run() -> [(Double, Double)] {
+        func run() -> [[Double]] {
             (0..<200).map { i in
                 let context = CameraContext(
-                    speed: Double(i) % 90, speedLimit: 45, isNavigating: true, isRecording: true,
+                    speed: (Double(i) * 90.0 / 200.0).truncatingRemainder(dividingBy: 90),
+                    speedLimit: 45, isNavigating: true, isRecording: true,
                     distanceToNextTurn: Double(i * 30), instruction: "Turn",
                     maneuverImageName: "", destinationDistance: Double(i * 100),
                     hasRoute: true, userPitchOverride: .auto)
                 let t = CameraDecisionEngine.computeTarget(from: context)
-                return (t.altitude, t.pitch)
+                return [t.altitude, t.pitch]
             }
         }
         XCTAssertEqual(run(), run())

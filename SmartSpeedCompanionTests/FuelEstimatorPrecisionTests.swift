@@ -56,7 +56,7 @@ final class FuelEstimatorPrecisionTests: XCTestCase {
     func testUnitSystemsAgreePhysicallyOnCO2() {
         let miles = 250.0
         let mpg = 25.0
-        let imperialCO2Lbs = FuelEstimator.estimateCO2(FuelEstimator.estimateFuelUsed(distanceMiles: miles, mpg: mpg))
+        let imperialCO2Lbs = FuelEstimator.estimateCO2(fuelUsedGallons: FuelEstimator.estimateFuelUsed(distanceMiles: miles, mpg: mpg))
 
         let km = miles * 1.60934
         let lPer100km = 235.215 / mpg // mpg → L/100km exact inverse

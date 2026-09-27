@@ -94,6 +94,7 @@ enum GPSFixFactory {
             horizontalAccuracy: accuracy,
             verticalAccuracy: 10,
             course: course,
+            courseAccuracy: 5,
             speed: clampedSpeedMph * mphToMs,
             speedAccuracy: speedAccuracy,
             timestamp: timestamp
@@ -113,6 +114,7 @@ enum GPSFixFactory {
             horizontalAccuracy: 5,
             verticalAccuracy: 10,
             course: 90,
+            courseAccuracy: 5,
             speed: -1,
             speedAccuracy: -1,
             timestamp: timestamp
@@ -285,6 +287,68 @@ extension XCTestCase {
     func assertMph(_ actual: Double, equals expected: Double, _ message: String = "",
                    file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertEqual(actual, expected, accuracy: 0.06, message, file: file, line: line)
+    }
+}
+
+// MARK: - Repo source reader (sandbox-safe)
+
+/// Reads a file from the operator's checkout for source-pinning tests.
+///
+/// The simulator test host runs sandboxed: macOS TCC denies the app access
+/// to ~/Documents, and the runner's CWD is never the project root, so both
+/// relative paths ("SmartSpeedCompanion/Core/...") and directory enumeration
+/// of the host checkout fail. When a read is impossible, tests should skip
+/// (not fail) — the same convention SpeedLimitSignTests established — so
+/// environmental denials can't mask real regressions, and so the suite still
+/// passes wherever reads ARE permitted (e.g. Run destinations on the host).
+///
+/// Resolution: anchor at #filePath (always correct on this machine), then
+/// walk upward until the expected "<subPath>" exists. Works no matter how
+/// deep the checkout sits and mirrors SpeedLimitSignTests' proven approach.
+enum RepoSource {
+    /// Successes only — on failure we throw a FRESH XCTSkip each call so the
+    /// XCTest runner sees a genuine skip for every test that needs one.
+    private static var cache: [String: String] = [:]
+    private static let lock = NSLock()
+
+    static func read(_ subPath: String,
+                     file: StaticString = #filePath,
+                     line: UInt = #line) throws -> String {
+        let key = "\(file)\u{1F}\(subPath)"
+        lock.lock()
+        if let cached = cache[key] {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+
+        let text: String
+        do {
+            text = try resolveAndRead(subPath, callerFile: "\(file)")
+        } catch {
+            throw XCTSkip(
+                "Repo source not readable from the test sandbox: \((error as NSError).localizedDescription)"
+            )
+        }
+        lock.lock()
+        cache[key] = text
+        lock.unlock()
+        return text
+    }
+
+    private static func resolveAndRead(_ subPath: String, callerFile: String) throws -> String {
+        var dir = URL(fileURLWithPath: callerFile).deletingLastPathComponent()
+        for _ in 0..<6 {
+            let candidate = dir.appendingPathComponent(subPath).path
+            if FileManager.default.isReadableFile(atPath: candidate) {
+                return try String(contentsOfFile: candidate, encoding: .utf8)
+            }
+            dir.deleteLastPathComponent()
+        }
+        throw NSError(domain: NSCocoaErrorDomain, code: 260, userInfo: [
+            NSLocalizedDescriptionKey:
+                "\(subPath) not found/readable above \(URL(fileURLWithPath: callerFile).deletingLastPathComponent().path)"
+        ])
     }
 }
 

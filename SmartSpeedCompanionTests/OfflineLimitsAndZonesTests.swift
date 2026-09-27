@@ -32,7 +32,7 @@ final class OfflineLimitsAndZonesTests: XCTestCase {
     }
 
     func testEstimateIsMarkedInexact() {
-        let estimate = OfflineLimitsDownloader().heuristicEstimate(radiusMiles: 10)
+        let estimate = OfflineLimitsDownloader.shared.heuristicEstimate(radiusMiles: 10)
         XCTAssertFalse(estimate.isReal,
                        "The heuristic estimate must never claim measured certainty")
     }
@@ -40,15 +40,15 @@ final class OfflineLimitsAndZonesTests: XCTestCase {
     // MARK: - Heuristic estimate scaling
 
     func testHeuristicScalesWithArea() {
-        let small = OfflineLimitsDownloader().heuristicEstimate(radiusMiles: 5)
-        let large = OfflineLimitsDownloader().heuristicEstimate(radiusMiles: 20)
+        let small = OfflineLimitsDownloader.shared.heuristicEstimate(radiusMiles: 5)
+        let large = OfflineLimitsDownloader.shared.heuristicEstimate(radiusMiles: 20)
         XCTAssertGreaterThan(large.roadCount, small.roadCount)
         // πr² scaling: 4× radius → 16× roads.
         XCTAssertEqual(Double(large.roadCount) / Double(small.roadCount), 16.0, accuracy: 0.1)
     }
 
     func testHeuristicNegativeRadiusClamps() {
-        let estimate = OfflineLimitsDownloader().heuristicEstimate(radiusMiles: -5)
+        let estimate = OfflineLimitsDownloader.shared.heuristicEstimate(radiusMiles: -5)
         XCTAssertEqual(estimate.roadCount, 0, "Negative radius must clamp to zero roads")
     }
 

@@ -10,7 +10,7 @@ final class RoadGeocoderCacheTests: XCTestCase {
     // MARK: - Grid keys
 
     func testGridKeyDeterministic() async {
-        let geocoder = RoadGeocoder()
+        let geocoder = RoadGeocoder.shared
         let coord = GeoCorpus.intersection
         let a = await geocoder.gridKey(for: coord)
         let b = await geocoder.gridKey(for: coord)
@@ -18,7 +18,7 @@ final class RoadGeocoderCacheTests: XCTestCase {
     }
 
     func testGridKeyBucketsFiftyMeterCells() async {
-        let geocoder = RoadGeocoder()
+        let geocoder = RoadGeocoder.shared
         let base = GeoCorpus.intersection
         let sameCell = GPSFixFactory.advance(base, meters: 5, heading: 90)
         let nextCell = GPSFixFactory.advance(base, meters: 120, heading: 90)
@@ -31,7 +31,7 @@ final class RoadGeocoderCacheTests: XCTestCase {
     }
 
     func testGridKeyCellBoundariesAreExclusive() async {
-        let geocoder = RoadGeocoder()
+        let geocoder = RoadGeocoder.shared
         // 0.0005° ≈ 55 m at this latitude: 0.00049 is in-cell, 0.00051 is not.
         let base = CLLocationCoordinate2D(latitude: 33.30620, longitude: -111.84120)
         let inside = CLLocationCoordinate2D(latitude: 33.30620 + 0.00049, longitude: -111.84120)
@@ -46,7 +46,7 @@ final class RoadGeocoderCacheTests: XCTestCase {
     // MARK: - Cache lifecycle
 
     func testClearCacheIsSafeWhenEmpty() async {
-        let geocoder = RoadGeocoder()
+        let geocoder = RoadGeocoder.shared
         await geocoder.clearCache() // must not throw/trap on an empty cache
         await geocoder.clearCache() // idempotent
     }
@@ -57,17 +57,18 @@ final class RoadGeocoderCacheTests: XCTestCase {
         // With no network credentials gate needed (CLGeocoder offline in
         // tests returns errors), resolveRoadContext must return nil rather
         // than trap or hang. Bounded by the timeout below.
-        let geocoder = RoadGeocoder()
+        let geocoder = RoadGeocoder.shared
         let result = await geocoder.resolveRoadContext(at: GeoCorpus.intersection)
         // nil is the acceptable offline answer; a non-nil result (cached
-        // from a prior suite run) is also acceptable.
-        if let result {
-            XCTAssertFalse(result.roadName.isEmpty)
+        // from a prior suite run) is also acceptable. roadName itself is
+        // optional — only assert when a concrete name came back.
+        if let roadName = result?.roadName {
+            XCTAssertFalse(roadName.isEmpty)
         }
     }
 
     func testResolveRoadContextTimeoutBounded() async {
-        let geocoder = RoadGeocoder()
+        let geocoder = RoadGeocoder.shared
         let start = Date()
         _ = await geocoder.resolveRoadContext(
             at: CLLocationCoordinate2D(latitude: 33.30620, longitude: -111.84120))
@@ -85,7 +86,7 @@ final class RoadGeocoderCacheTests: XCTestCase {
         #if os(Windows)
         let source = try String(contentsOfFile: "SmartSpeedCompanion\\Core\\SpeedEngine.swift", encoding: .utf8)
         #else
-        let source = try String(contentsOfFile: "SmartSpeedCompanion/Core/SpeedEngine.swift", encoding: .utf8)
+        let source = try RepoSource.read("SmartSpeedCompanion/Core/SpeedEngine.swift")
         #endif
         let section = try section(in: source, anchor: "private func resolvedRoadName")
         XCTAssertFalse(section.contains("return nil\n"), 
@@ -97,7 +98,7 @@ final class RoadGeocoderCacheTests: XCTestCase {
     func testRoadIdentificationShape() {
         // RoadIdentification is the public context type — its roadName is
         // what flows into every cache key. Nil-safety pinned here.
-        let geocoder = RoadGeocoder()
+        let geocoder = RoadGeocoder.shared
         _ = geocoder // referenced so the type-checks in context
         // The struct is built inside the geocoder; verify the consumer
         // contract: SpeedLimitService treats a nil/empty name as

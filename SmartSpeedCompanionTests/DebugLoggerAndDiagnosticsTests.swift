@@ -49,7 +49,7 @@ final class DebugLoggerAndDiagnosticsTests: XCTestCase {
     }
 
     func testMaxLogsCapIsFifteenHundred() throws {
-        let source = try String(contentsOfFile: loggerPath(), encoding: .utf8)
+        let source = try RepoSource.read(loggerPath())
         XCTAssertTrue(source.contains("maxLogs = 1500"),
                       "The ring-buffer cap is the heat/memory boundary for long drives — raising it needs a re-think of the diagnostics screen")
     }
@@ -69,7 +69,7 @@ final class DebugLoggerAndDiagnosticsTests: XCTestCase {
     // MARK: - Observability contracts (the logs tests read elsewhere)
 
     func testHEREThrottleLogsExist() throws {
-        let source = try String(contentsOfFile: hereRestPath(), encoding: .utf8)
+        let source = try RepoSource.read(hereRestPath())
         XCTAssertTrue(source.contains("HERE REST: HTTP"),
                       "HTTP status logging is the primary rate-limit diagnostic")
         XCTAssertTrue(source.contains("429"),
@@ -77,13 +77,13 @@ final class DebugLoggerAndDiagnosticsTests: XCTestCase {
     }
 
     func testContinuityGuardDecisionsAreLogged() throws {
-        let source = try String(contentsOfFile: servicePath(), encoding: .utf8)
+        let source = try RepoSource.read(servicePath())
         XCTAssertTrue(source.contains("[ContinuityGuard] HOLD"),
                       "Hold decisions must be log-visible to diagnose flicker reports")
     }
 
     func testGeofenceTriggerIsLogged() throws {
-        let source = try String(contentsOfFile: geofencePath(), encoding: .utf8)
+        let source = try RepoSource.read(geofencePath())
         XCTAssertTrue(source.contains("triggering background batch fetch"),
                       "Batch-fetch triggers must be visible in diagnostics")
     }

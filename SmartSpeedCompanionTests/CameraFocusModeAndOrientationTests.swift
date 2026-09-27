@@ -27,13 +27,13 @@ final class CameraFocusModeAndOrientationTests: XCTestCase {
     func testOrientationLockSwitchesWithFocusMode() throws {
         // DriveViewModel.isDriveFocusMode.didSet sets
         // AppDelegate.orientationLock = .all (in) / .portrait (out).
-        let source = try String(contentsOfFile: driveViewModelPath(), encoding: .utf8)
+        let source = try RepoSource.read(driveViewModelPath())
         XCTAssertTrue(source.contains("AppDelegate.orientationLock = isDriveFocusMode ? .all : .portrait"),
                       "Focus mode must own the orientation lock: all orientations in, portrait out")
     }
 
     func testExitRequestsPortraitGeometry() throws {
-        let source = try String(contentsOfFile: driveViewModelPath(), encoding: .utf8)
+        let source = try RepoSource.read(driveViewModelPath())
         let didSet = try section(in: source, anchor: "@Published public var isDriveFocusMode: Bool = false")
         XCTAssertTrue(didSet.contains("requestGeometryUpdate"),
                       "Exit must request a geometry update back to portrait")
@@ -44,7 +44,7 @@ final class CameraFocusModeAndOrientationTests: XCTestCase {
     // MARK: - Haptic cues
 
     func testFocusEnterExitHapticsExist() throws {
-        let source = try String(contentsOfFile: hapticPath(), encoding: .utf8)
+        let source = try RepoSource.read(hapticPath())
         XCTAssertTrue(source.contains("playFocusModeEnter"))
         XCTAssertTrue(source.contains("playFocusModeExit"))
     }
@@ -52,7 +52,7 @@ final class CameraFocusModeAndOrientationTests: XCTestCase {
     // MARK: - Published state defaults
 
     func testFocusModeDefaultsOff() throws {
-        let source = try String(contentsOfFile: driveViewModelPath(), encoding: .utf8)
+        let source = try RepoSource.read(driveViewModelPath())
         XCTAssertTrue(source.contains("@Published public var isDriveFocusMode: Bool = false"),
                       "Focus mode must default off — the driver launches into the full HUD")
     }
@@ -86,7 +86,7 @@ final class CameraFocusModeAndOrientationTests: XCTestCase {
     // MARK: - Idle-timer policy (screen must stay awake in focus mode)
 
     func testIdleTimerPolicyTiedToRecordingState() throws {
-        let source = try String(contentsOfFile: driveViewModelPath(), encoding: .utf8)
+        let source = try RepoSource.read(driveViewModelPath())
         XCTAssertTrue(source.contains("updateIdleTimer()"),
                       "isRecording/isNavigating didSet must refresh the idle timer")
         XCTAssertTrue(source.contains("enforceIdleLifecycle()"),
@@ -96,7 +96,7 @@ final class CameraFocusModeAndOrientationTests: XCTestCase {
     // MARK: - Live Activity continues during focus mode
 
     func testLiveActivityCoalescingPolicyIsUnaffectedByFocus() throws {
-        let source = try String(contentsOfFile: driveViewModelPath(), encoding: .utf8)
+        let source = try RepoSource.read(driveViewModelPath())
         XCTAssertTrue(source.contains("liveActivityUpdateInterval: TimeInterval = 2.0"),
                       "The 2 s Live Activity coalesce window is a heat boundary — focus mode must not bypass it")
     }

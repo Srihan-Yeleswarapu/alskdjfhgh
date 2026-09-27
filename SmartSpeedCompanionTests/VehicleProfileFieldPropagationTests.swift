@@ -54,7 +54,11 @@ final class VehicleProfileFieldPropagationTests: XCTestCase {
 
     private func saveAndReload() {
         try! context.save()
-        context.reset()
+        // Re-fetch from the store instead of `context.reset()` (removed from
+        // the current SwiftData surface): a fresh ModelContext over the same
+        // container proves the row really persisted.
+        context = ModelContext(container)
+        context.autosaveEnabled = false
     }
 
     // MARK: - Round-trip of every driving field
@@ -107,7 +111,9 @@ final class VehicleProfileFieldPropagationTests: XCTestCase {
 
         a.userBuffer = 4
         try! context.save()
-        context.reset()
+        // Re-fetch through a fresh context (see saveAndReload). 
+        context = ModelContext(container)
+        context.autosaveEnabled = false
 
         let fetched = try! context.fetch(FetchDescriptor<VehicleProfile>()).sorted { $0.name < $1.name }
         XCTAssertEqual(fetched[0].userBuffer, 4, "edited profile must persist its new value")
@@ -138,7 +144,8 @@ final class VehicleProfileFieldPropagationTests: XCTestCase {
         let p = makeProfile(name: "Neg", buffer: -1, audio: true, haptic: true,
                             style: "rigid", avoid: false, icon: "sedan", units: "Imperial")
         try! context.save()
-        context.reset()
+        context = ModelContext(container)
+        context.autosaveEnabled = false
         let fetched = try! context.fetch(FetchDescriptor<VehicleProfile>())
         XCTAssertEqual(fetched[0].userBuffer, -1, "persistence stores what was written; clamping is the engine's job")
         XCTAssertEqual(p.userBuffer, -1)
@@ -167,7 +174,8 @@ final class VehicleProfileFieldPropagationTests: XCTestCase {
                         style: "rigid", avoid: false, icon: "sedan", units: "Imperial")
         }
         try! context.save()
-        context.reset()
+        context = ModelContext(container)
+        context.autosaveEnabled = false
 
         let fetched = try! context.fetch(FetchDescriptor<VehicleProfile>())
         XCTAssertEqual(fetched.count, 5)

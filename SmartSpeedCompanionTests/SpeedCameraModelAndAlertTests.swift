@@ -94,13 +94,13 @@ final class SpeedCameraModelAndAlertTests: XCTestCase {
 
     @MainActor
     func testServiceStartsEmpty() {
-        let service = SpeedCameraService()
+        let service = SpeedCameraService.shared
         XCTAssertTrue(service.cameras.isEmpty, "Fresh service must not carry stale cameras")
     }
 
     @MainActor
     func testCamerasPropertyIsWritableForTestInjection() {
-        let service = SpeedCameraService()
+        let service = SpeedCameraService.shared
         let cameras = try! JSONDecoder().decode([SpeedCamera].self, from: Data(sampleJSON.utf8))
         service.cameras = cameras
         XCTAssertEqual(service.cameras.count, 2)
@@ -115,7 +115,7 @@ final class SpeedCameraModelAndAlertTests: XCTestCase {
         // and clears it when the camera falls out of range. The HUD and the
         // CarPlay alert both consume it — the property must stay Optional
         // so "no alert" is representable.
-        let source = try String(contentsOfFile: driveViewModelPath(), encoding: .utf8)
+        let source = try RepoSource.read(driveViewModelPath())
         XCTAssertTrue(source.contains("@Published public var activeCameraAlert: SpeedCamera?"),
                       "activeCameraAlert must remain Optional — the banner clears it by assigning nil")
         XCTAssertTrue(source.contains("@Published public var nearbyCameras: [SpeedCamera]"),

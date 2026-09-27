@@ -74,8 +74,9 @@ final class SpeedEngineMixedUnitsSessionTests: XCTestCase {
         XCTAssertEqual(imperialStatuses, metricStatuses,
                        "alert state must be unit-invariant for the same physical drive")
         // Display values: metric must be exactly the imperial value scaled.
-        for (i, m) in zip(imperialDisplays, metricDisplays).enumerated() {
-            XCTAssertEqual(m, imperialDisplays[i] * 1.60934, accuracy: 0.05,
+        for (i, pair) in zip(imperialDisplays, metricDisplays).enumerated() {
+            let (imperial, metric) = pair
+            XCTAssertEqual(metric, imperial * 1.60934, accuracy: 0.05,
                            "display \(i) broke the 1.60934 scaling")
         }
     }

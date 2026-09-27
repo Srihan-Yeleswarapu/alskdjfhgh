@@ -11,7 +11,7 @@ final class CarPlayMapPanningTests: XCTestCase {
     // MARK: - Delegate wiring
 
     func testRootTemplateImplementsPanningDelegateCallbacks() throws {
-        let source = try String(contentsOfFile: rootTemplateSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(rootTemplateSourcePath())
         // Entry point gate + lifecycle (suspend/resume automatic camera).
         XCTAssertTrue(
             source.contains("mapTemplateShouldShowPanningInterface"),
@@ -63,7 +63,7 @@ final class CarPlayMapPanningTests: XCTestCase {
     // MARK: - Camera suspension + movement
 
     func testMapControllerSuspendsCameraAndMovesOnlyWhilePanning() throws {
-        let source = try String(contentsOfFile: mapControllerSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(mapControllerSourcePath())
         // Panning flag participates in the camera gate.
         let cameraBody = try sourceSection(in: source, anchor: "private func updateNavigationCamera()")
         XCTAssertTrue(
@@ -94,7 +94,7 @@ final class CarPlayMapPanningTests: XCTestCase {
     // MARK: - Scene wiring
 
     func testSceneDelegateHandsMapControllerToRootTemplate() throws {
-        let source = try String(contentsOfFile: sceneDelegateSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(sceneDelegateSourcePath())
         XCTAssertTrue(
             source.contains("root.mapController = carPlayMapController"),
             "The scene delegate must hand the MKMapView controller to the root template so pan callbacks can drive it."

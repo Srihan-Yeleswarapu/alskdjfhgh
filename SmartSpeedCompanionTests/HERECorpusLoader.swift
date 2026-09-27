@@ -170,56 +170,76 @@ enum HERECorpus {
             latitude: 33.30620, longitude: -111.84120, heading: 90,
             speedLimitMph: 45, roadName: "W Frye Rd", direction: "E",
             routingSection: [
-                "spans": [
-                    ["offset": 0, "maxSpeed": ["value": 20.1168, "unit": "m/s"]]
-                ]
-            ] as [String: AnyJSON],
+                "spans": AnyJSON.array([
+                    .dictionary(["offset": .int(0),
+                                 "maxSpeed": .dictionary(["value": .double(20.1168), "unit": .string("m/s")])])
+                ])
+            ],
             routeMatchLink: [
-                "SPEED_LIMITS_FCn": [["FROM_REF_SPEED_LIMIT": "72.4204"]],
-                "ROAD_NAME_FCn": [["NAMES": "W Frye Rd"]]
-            ] as [String: AnyJSON]
+                "SPEED_LIMITS_FCn": AnyJSON.array([
+                    .dictionary(["FROM_REF_SPEED_LIMIT": .string("72.4204")])
+                ]),
+                "ROAD_NAME_FCn": AnyJSON.array([
+                    .dictionary(["NAMES": .string("W Frye Rd")])
+                ])
+            ]
         ),
         HereCorpusRecord(
             id: "corpus-school-20",
             latitude: 33.30780, longitude: -111.83960, heading: 0,
             speedLimitMph: 20, roadName: "S Coronado Rd", direction: "",
             routingSection: [
-                "spans": [
-                    ["offset": 0, "maxSpeed": ["value": 8.9408, "unit": "m/s"]]
-                ]
-            ] as [String: AnyJSON],
+                "spans": AnyJSON.array([
+                    .dictionary(["offset": .int(0),
+                                 "maxSpeed": .dictionary(["value": .double(8.9408), "unit": .string("m/s")])])
+                ])
+            ],
             routeMatchLink: [
-                "SPEED_LIMITS_FCn": [["FROM_REF_SPEED_LIMIT": "32.1869"]],
-                "ROAD_NAME_FCn": [["NAMES": "S Coronado Rd"]]
-            ] as [String: AnyJSON]
+                "SPEED_LIMITS_FCn": AnyJSON.array([
+                    .dictionary(["FROM_REF_SPEED_LIMIT": .string("32.1869")])
+                ]),
+                "ROAD_NAME_FCn": AnyJSON.array([
+                    .dictionary(["NAMES": .string("S Coronado Rd")])
+                ])
+            ]
         ),
         HereCorpusRecord(
             id: "corpus-highway-65",
             latitude: 33.31000, longitude: -111.83800, heading: 180,
             speedLimitMph: 65, roadName: "SR-101", direction: "S",
             routingSection: [
-                "spans": [
-                    ["offset": 0, "maxSpeed": ["value": 29.0576, "unit": "m/s"]]
-                ]
-            ] as [String: AnyJSON],
+                "spans": AnyJSON.array([
+                    .dictionary(["offset": .int(0),
+                                 "maxSpeed": .dictionary(["value": .double(29.0576), "unit": .string("m/s")])])
+                ])
+            ],
             routeMatchLink: [
-                "SPEED_LIMITS_FCn": [["FROM_REF_SPEED_LIMIT": "104.607"]],
-                "ROAD_NAME_FCn": [["NAMES": "SR-101"]]
-            ] as [String: AnyJSON]
+                "SPEED_LIMITS_FCn": AnyJSON.array([
+                    .dictionary(["FROM_REF_SPEED_LIMIT": .string("104.607")])
+                ]),
+                "ROAD_NAME_FCn": AnyJSON.array([
+                    .dictionary(["NAMES": .string("SR-101")])
+                ])
+            ]
         ),
         HereCorpusRecord(
             id: "corpus-interstate-75",
             latitude: 33.31300, longitude: -111.83500, heading: 270,
             speedLimitMph: 75, roadName: "I-10", direction: "W",
             routingSection: [
-                "spans": [
-                    ["offset": 0, "maxSpeed": ["value": 33.528, "unit": "m/s"]]
-                ]
-            ] as [String: AnyJSON],
+                "spans": AnyJSON.array([
+                    .dictionary(["offset": .int(0),
+                                 "maxSpeed": .dictionary(["value": .double(33.528), "unit": .string("m/s")])])
+                ])
+            ],
             routeMatchLink: [
-                "SPEED_LIMITS_FCn": [["FROM_REF_SPEED_LIMIT": "120.7"]],
-                "ROAD_NAME_FCn": [["NAMES": "I-10"]]
-            ] as [String: AnyJSON]
+                "SPEED_LIMITS_FCn": AnyJSON.array([
+                    .dictionary(["FROM_REF_SPEED_LIMIT": .string("120.7")])
+                ]),
+                "ROAD_NAME_FCn": AnyJSON.array([
+                    .dictionary(["NAMES": .string("I-10")])
+                ])
+            ]
         )
     ]
 }

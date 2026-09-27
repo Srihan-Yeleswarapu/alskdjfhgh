@@ -1,76 +1,91 @@
 import XCTest
+import CoreLocation
 @testable import SmartSpeedCompanion
 
-/// Session recorder: GPS/CSV integrity — header, value format, monotone time,
-/// no NaN/negative leakage. Real SessionRecorder, no network.
+/// Session recorder: session lifecycle — flag defaults, start/stop
+/// idempotency, and tolerance of invalid GPS fixes. Real SessionRecorder,
+/// no network, no SwiftData (the recorder tolerates a nil model context).
+/// (The historical CSV/ingest surface was replaced by SwiftData sessions in
+/// the DriveSession migration; these tests track the current lifecycle API.)
+@MainActor
 final class SessionRecorderStressTests: XCTestCase {
 
+    private func makeRecorder() -> SessionRecorder {
+        SessionRecorder(speedEngine: SpeedEngine(locationManager: LocationManager()),
+                        locationManager: LocationManager())
+    }
+
     func testRecordingFlagIsOffByDefault() {
-        let r = SessionRecorder()
+        let r = makeRecorder()
         XCTAssertFalse(r.isRecording, "Recorder must not silently record")
     }
 
     func testStartMakesRecordingTrue() {
-        let r = SessionRecorder()
-        r.start()
+        let r = makeRecorder()
+        r.startSession()
         XCTAssertTrue(r.isRecording)
-        r.stop()
+        _ = r.endSession()
     }
 
     func testStopIsIdempotent() {
-        let r = SessionRecorder()
-        r.start()
-        r.stop()
-        r.stop()
+        let r = makeRecorder()
+        r.startSession()
+        _ = r.endSession()
+        _ = r.endSession()
         XCTAssertFalse(r.isRecording, "Double-stop corrupted recorder state")
     }
 
     func testStopWithoutStartIsSafe() {
-        let r = SessionRecorder()
-        r.stop() // must not crash or corrupt
+        let r = makeRecorder()
+        _ = r.endSession() // must not crash or corrupt
         XCTAssertFalse(r.isRecording)
     }
 
-    // MARK: - Location ingestion while recording
+    // MARK: - Ingestion gate
 
     func testIngestWithoutRecordingIsIgnored() {
-        let r = SessionRecorder()
-        r.ingest(location: CLLocation(latitude: 37.0, longitude: -122.0, speed: 20))
-        // No rows should exist; nothing observable, so just assert no crash
-        // and state stayed clean.
-        XCTAssertFalse(r.isRecording)
+        // The recorder only samples through its 1 Hz recording timer; a
+        // location delivered while idle must not start a session implicitly.
+        let r = makeRecorder()
+        r.recordDataPointForTesting(CLLocation(latitude: 37.0, longitude: -122.0, speed: 20))
+        XCTAssertFalse(r.isRecording,
+                       "Idle recorder must not be started by a location delivery")
     }
 
     func testIngestWhileRecordingAccumulates() {
-        let r = SessionRecorder()
-        r.start()
+        let r = makeRecorder()
+        r.startSession()
+        XCTAssertTrue(r.isRecording)
         var now = Date(timeIntervalSince1970: 9_000_000)
         for i in 0..<1_000 {
             now.addTimeInterval(1)
-            r.ingest(location: CLLocation(
+            r.recordDataPointForTesting(CLLocation(
                 coordinate: .init(latitude: 37.0 + Double(i) * 0.00001,
                                   longitude: -122.0),
                 altitude: 10, horizontalAccuracy: 5, verticalAccuracy: 5,
                 course: 90, speed: 25, timestamp: now))
         }
-        r.stop()
-        XCTAssertTrue(r.isRecording == false)
+        let session = r.endSession()
+        XCTAssertFalse(r.isRecording)
+        XCTAssertNotNil(session, "A recorded session must be returned on stop")
     }
 
     func testIngestHandlesInvalidSpeedFixes() {
         // GPS sometimes reports speed = -1 (invalid); the recorder must not
         // crash or write garbage.
-        let r = SessionRecorder()
-        r.start()
-        let now = Date()
-        r.ingest(location: CLLocation(latitude: 37.0, longitude: -122.0, speed: -1))
-        r.ingest(location: CLLocation(latitude: 37.0, longitude: -122.0, speed: .nan))
-        r.stop()
+        let r = makeRecorder()
+        r.startSession()
+        r.recordDataPointForTesting(CLLocation(latitude: 37.0, longitude: -122.0, speed: -1))
+        r.recordDataPointForTesting(CLLocation(latitude: 37.0, longitude: -122.0, speed: .nan))
+        _ = r.endSession()
         XCTAssertFalse(r.isRecording)
     }
 
+    // MARK: - Timestamp monotonicity
+
     func testTimestampsAreMonotoneInIngestedFixes() {
-        // The recorder must never write fixes whose timestamps go backwards.
+        // The recorder must never see fix timestamps going backwards; the
+        // per-second sampler stamps with Date() so ordering is monotone.
         var now = Date(timeIntervalSince1970: 9_000_000)
         var last: TimeInterval = 0
         for _ in 0..<500 {
@@ -82,12 +97,12 @@ final class SessionRecorderStressTests: XCTestCase {
     }
 
     func testRapidStartStopCyclesStayConsistent() {
-        let r = SessionRecorder()
+        let r = makeRecorder()
         for _ in 0..<200 {
-            r.start()
+            r.startSession()
             XCTAssertTrue(r.isRecording)
-            r.ingest(location: CLLocation(latitude: 37.0, longitude: -122.0, speed: 30))
-            r.stop()
+            r.recordDataPointForTesting(CLLocation(latitude: 37.0, longitude: -122.0, speed: 30))
+            _ = r.endSession()
             XCTAssertFalse(r.isRecording)
         }
     }
@@ -97,6 +112,7 @@ private extension CLLocation {
     convenience init(latitude: Double, longitude: Double, speed: Double) {
         self.init(coordinate: .init(latitude: latitude, longitude: longitude),
                   altitude: 10, horizontalAccuracy: 5, verticalAccuracy: 5,
-                  course: 0, speed: speed, timestamp: Date())
+                  course: 0, courseAccuracy: 5, speed: speed,
+                  speedAccuracy: 1, timestamp: Date())
     }
 }

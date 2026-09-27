@@ -17,7 +17,7 @@ final class CarPlaySessionWithoutNavigationTests: XCTestCase {
     // MARK: - Connect-time wiring
 
     func testSceneDelegateBeginsIdleSessionAfterRootTemplateIsInstalled() throws {
-        let source = try String(contentsOfFile: sceneDelegateSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(sceneDelegateSourcePath())
         XCTAssertTrue(
             source.contains("root.beginSessionWithoutNavigationIfNeeded()"),
             "The scene delegate must begin the placeholder session when CarPlay connects."
@@ -42,7 +42,7 @@ final class CarPlaySessionWithoutNavigationTests: XCTestCase {
     // MARK: - Placeholder session shape
 
     func testIdleSessionUsesPlaceholderTripAndGuardsAgainstRealNavigation() throws {
-        let source = try String(contentsOfFile: navigationManagerSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(navigationManagerSourcePath())
         let beginBody = try sourceSection(in: source, anchor: "public func beginSessionWithoutNavigation()")
         XCTAssertTrue(
             beginBody.contains("guard !viewModel.isNavigating, idleSession == nil else { return }"),
@@ -67,7 +67,7 @@ final class CarPlaySessionWithoutNavigationTests: XCTestCase {
     }
 
     func testIdleManeuverCardRendersSpeedLimitRoadAndStatus() throws {
-        let source = try String(contentsOfFile: navigationManagerSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(navigationManagerSourcePath())
         let cardBody = try sourceSection(in: source, anchor: "private func refreshIdleManeuverCard()")
         XCTAssertTrue(
             cardBody.contains("Limit \\(displayLimit)"),
@@ -106,7 +106,7 @@ final class CarPlaySessionWithoutNavigationTests: XCTestCase {
     // MARK: - Real trip transition
 
     func testRealTripReplacesIdleSessionBeforeItsOwnSessionStarts() throws {
-        let source = try String(contentsOfFile: navigationManagerSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(navigationManagerSourcePath())
         let startBody = try sourceSection(in: source, anchor: "public func startNavigation(route: MKRoute, destination: MKMapItem)")
         XCTAssertTrue(
             startBody.contains("endIdleSession(forNavigationTransition: true)"),
@@ -121,7 +121,7 @@ final class CarPlaySessionWithoutNavigationTests: XCTestCase {
     }
 
     func testStopEchoLatchIsArmedOnlyForNavigationTransitions() throws {
-        let source = try String(contentsOfFile: navigationManagerSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(navigationManagerSourcePath())
         let endIdleBody = try sourceSection(in: source, anchor: "public func endIdleSession(forNavigationTransition: Bool)")
         XCTAssertTrue(
             endIdleBody.contains("forNavigationTransition && hadSession"),
@@ -145,7 +145,7 @@ final class CarPlaySessionWithoutNavigationTests: XCTestCase {
     // MARK: - Stop-callback disambiguation
 
     func testStopCallbackReleasesStaleBindingsThenChecksEchoLatch() throws {
-        let source = try String(contentsOfFile: rootTemplateSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(rootTemplateSourcePath())
         let stopBody = try sourceSection(in: source, anchor: "nonisolated func mapTemplateDidStopNavigating")
         // Ordering contract: stale placeholder bindings are dropped first,
         // then the echo latch decides whether this stop is real.
@@ -170,7 +170,7 @@ final class CarPlaySessionWithoutNavigationTests: XCTestCase {
     // MARK: - Lifecycle coverage
 
     func testDisconnectAndNavigationEndTearDownThePlaceholderSession() throws {
-        let source = try String(contentsOfFile: navigationManagerSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(navigationManagerSourcePath())
         let finishBody = try sourceSection(in: source, anchor: "public func finishCurrentSession()")
         XCTAssertTrue(
             finishBody.contains("endIdleSession(forNavigationTransition: false)"),
@@ -189,7 +189,7 @@ final class CarPlaySessionWithoutNavigationTests: XCTestCase {
     }
 
     func testNavigationEndRestoresIdleSurfaceOnlyWhileCarPlayIsConnected() throws {
-        let source = try String(contentsOfFile: navigationManagerSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(navigationManagerSourcePath())
         let triggerBody = try sourceSection(in: source, anchor: "public func endNavigationTrigger() async")
         XCTAssertTrue(
             triggerBody.contains("beginSessionWithoutNavigation()"),
@@ -208,7 +208,7 @@ final class CarPlaySessionWithoutNavigationTests: XCTestCase {
     // MARK: - Reachability of the start control
 
     func testStartStopButtonLeadsMapButtonsForHeadUnitsThatTruncate() throws {
-        let source = try String(contentsOfFile: rootTemplateSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(rootTemplateSourcePath())
         let buttonsBody = try sourceSection(in: source, anchor: "mapTemplate.mapButtons = [")
         XCTAssertTrue(
             buttonsBody.contains("startStopButton,"),
@@ -219,7 +219,7 @@ final class CarPlaySessionWithoutNavigationTests: XCTestCase {
     // MARK: - Self-healing surfaces
 
     func testCancelledTripPreviewRestoresTheIdleSpeedBanner() throws {
-        let source = try String(contentsOfFile: rootTemplateSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(rootTemplateSourcePath())
         XCTAssertTrue(
             source.contains("nonisolated func mapTemplateDidCancelNavigation"),
             "A dismissed/cancelled trip preview must restore the session-without-navigation banner."
@@ -247,7 +247,7 @@ final class CarPlaySessionWithoutNavigationTests: XCTestCase {
     }
 
     func testFrameworkStoppedIdleSessionIsRebuiltWhenNoNavigationIsRunning() throws {
-        let source = try String(contentsOfFile: rootTemplateSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(rootTemplateSourcePath())
         let stopBody = try sourceSection(in: source, anchor: "nonisolated func mapTemplateDidStopNavigating")
         XCTAssertTrue(
             stopBody.contains("self.navigationManager.beginSessionWithoutNavigation()"),

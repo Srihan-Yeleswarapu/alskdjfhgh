@@ -116,8 +116,7 @@ final class WidgetTimelineAndSnapshotTests: XCTestCase {
     func testWidgetSnapshotSurvivesProcessRestartShape() throws {
         // Widgets decode snapshots from archived payloads after process death;
         // the payload must round-trip through JSON (the archive root).
-        let state = SpeedActivityAttributes.ContentState(
-            speedKph: 55.5, speedLimit: 65, isOverLimit: false)
+        let state = makeState(speed: 55.5, limit: 65, over: false)
         let data = try JSONEncoder().encode(state)
         XCTAssertGreaterThan(data.count, 0)
         let back = try JSONDecoder().decode(SpeedActivityAttributes.ContentState.self, from: data)

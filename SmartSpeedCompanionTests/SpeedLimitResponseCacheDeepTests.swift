@@ -12,7 +12,7 @@ final class SpeedLimitResponseCacheDeepTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        cache = SpeedLimitResponseCache()
+        cache = SpeedLimitResponseCache.shared
     }
 
     override func tearDown() {

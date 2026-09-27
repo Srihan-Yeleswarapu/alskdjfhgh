@@ -189,14 +189,14 @@ final class AlertEngineOverLimitEpisodeTests: XCTestCase {
     /// Disabling BOTH channels mid-episode must stop the timer on its next
     /// tick; the guard clause is pinned by source.
     func testBothChannelsOffStopsTimerInSource() throws {
-        let source = try String(contentsOfFile: alertEngineSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(alertEngineSourcePath())
         XCTAssertTrue(source.contains("guard self.isAudioAlertsEnabled || self.isHapticAlertsEnabled else"),
                       "Timer tick must tear down monitoring when both channels are disabled mid-episode")
     }
 
     /// Snooze must be excluded from the published audio flag at every tick.
     func testAudioFlagExcludesSnoozeInSource() throws {
-        let source = try String(contentsOfFile: alertEngineSourcePath(), encoding: .utf8)
+        let source = try RepoSource.read(alertEngineSourcePath())
         XCTAssertTrue(source.contains("audioAlertActive = self.isAudioAlertsEnabled && !self.isSnoozed"),
                       "Timer tick must recompute the audio flag with the snooze window applied")
     }
