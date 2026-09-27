@@ -331,17 +331,22 @@ enum CarPlayUI {
 
             if placeholder {
                 // The no-data state ("--"): two rounded bars centered in
-                // the numeral band [620, 1056], sized down from the first
-                // draft so they read as dashes rather than dots at HUD
-                // scale (approved in the replica).
-                let barW = 120 * u, barH = 105 * u, off = 140 * u
+                // the numeral band [620, 1056]. The approved replica bars
+                // (120×105u) are chunky dashes at hero scale but shrink to
+                // ~4pt specks on a HUD-size sign (~34pt canvas), so they
+                // grow smoothly as the canvas shrinks below ~90pt — large
+                // renders keep the approved proportions exactly.
+                let boost = max(0, min(1, (90 - size) / 50))   // 0 ≥90pt · 1 ≤40pt
+                let barW = 120 * u * (1 + boost * 1.1)
+                let barH = 105 * u * (1 + boost * 0.5)
+                let off = min(140 * u * (1 + boost * 0.35), (sheet.width - barW) / 2 - 4 * u)
                 let bandMid = sheet.minY + (620 + 436.0 / 2) * u
                 signBlack.setFill()
                 for dx in [-off, off] {
                     let rect = CGRect(x: faceCenterX + dx - barW / 2,
                                       y: bandMid - barH / 2,
                                       width: barW, height: barH)
-                    UIBezierPath(roundedRect: rect, cornerRadius: 14 * u).fill()
+                    UIBezierPath(roundedRect: rect, cornerRadius: 14 * u * (1 + boost * 0.5)).fill()
                 }
             } else {
                 // Captions: cap size from the measurement, tracking solved

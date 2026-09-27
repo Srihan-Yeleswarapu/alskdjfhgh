@@ -961,10 +961,13 @@ fileprivate struct SpeedLimitPill: View {
     /// scale pulse so the user immediately sees their tap landed.
     let isRefreshing: Bool
 
-    /// Pill width in points. The UIKit image is rendered at pixel scale
-    /// (points × display scale) and downscaled by .resizable() so the
-    /// raster stays crisp at any zoom/trait change.
-    private var pillWidth: CGFloat { isLandscape ? 148 : 172 }
+    /// Pill width in points. Sized to sit proportionally beside the
+    /// START/STOP capsule (44pt tall): 120pt wide → 69pt tall ≈ 1.5× the
+    /// button, not the mockup's absolute pixel scale which dwarfed it.
+    /// The UIKit image is rendered at pixel scale (points × display scale)
+    /// and downscaled by .resizable() so the raster stays crisp at any
+    /// zoom/trait change.
+    private var pillWidth: CGFloat { isLandscape ? 100 : 120 }
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 4) {
