@@ -1522,6 +1522,27 @@ public final class NavigationCoordinator: ObservableObject, @unchecked Sendable 
         let distanceToRoute = routeMatch.distanceFromRoute
 
         if distanceToRoute > offRouteThreshold { // Trigger promptly once a moving fix is clearly off the route
+            // Keep the turn card alive while off-route. The off-route branch
+            // returns before the turn-proximity block below, which previously
+            // froze `distanceToNextTurn` at its start-up value of 0 — the
+            // "Turn right onto … in 0 ft" card from TestFlight 2.4.0 (b689).
+            //
+            // `routeMatch.coordinate` is the best on-route match for this fix
+            // (the forward-corridor matcher never rewinds), so its distance to
+            // the active maneuver is the honest remaining distance. Floored to
+            // ≥1 m so the card never claims an exact "0 ft" from far away.
+            // This only updates the NUMBER: no cues, no advancement, no voice
+            // — those stay owned by the on-route turn-proximity block.
+            if let maneuverCoord = currentManeuverCoordinate(steps: steps) {
+                let offRouteTurnDistance = CLLocation(
+                    latitude: routeMatch.coordinate.latitude,
+                    longitude: routeMatch.coordinate.longitude
+                ).distance(from: CLLocation(
+                    latitude: maneuverCoord.latitude,
+                    longitude: maneuverCoord.longitude
+                ))
+                self.distanceToNextTurn = max(offRouteTurnDistance, 1)
+            }
             // Do NOT reroute when stationary or very slow (stopped at a light,
             // parking lot, or while the user is still setting directions). This
             // prevents GPS jitter from changing the route and speaking over the
@@ -1982,6 +2003,18 @@ public final class NavigationCoordinator: ObservableObject, @unchecked Sendable 
             }
         }
         return false
+    }
+
+    /// End coordinate of the ACTIVE step's polyline (the upcoming maneuver
+    /// point), guarded against empty steps and an out-of-range index. Used by
+    /// the off-route branch of `updateNavigationProgress` to keep the turn
+    /// card's distance live while the vehicle is off the polyline.
+    private func currentManeuverCoordinate(steps: [MKRoute.Step]) -> CLLocationCoordinate2D? {
+        guard !steps.isEmpty else { return nil }
+        let idx = min(max(currentStepIndex, 0), steps.count - 1)
+        let step = steps[idx]
+        guard step.polyline.pointCount > 0 else { return nil }
+        return step.polyline.points()[step.polyline.pointCount - 1].coordinate
     }
 
     // MARK: - Navigation Math

@@ -79,6 +79,25 @@ final class ReroutePolicyTests: XCTestCase {
         XCTAssertTrue(fineDetector.contains("active === routeBeforeAttempt"))
     }
 
+    // MARK: - "0 ft" card freeze regression (TestFlight 2.4.0 b689)
+
+    /// FB: "I don't turn right in 0 feet." While the vehicle is off the
+    /// polyline, `updateNavigationProgress` returns inside the off-route
+    /// branch — which previously ran BEFORE the turn-proximity block, so
+    /// `distanceToNextTurn` stayed at its start-up 0 forever and the card
+    /// claimed the turn was 0 ft away. The off-route branch must keep the
+    /// number honest (via the matched on-route position) without triggering
+    /// cues.
+    func testOffRouteBranchKeepsTurnDistanceLive() throws {
+        let source = try RepoSource.read(sourcePath())
+        let progress = try section(in: source, anchor: "public func updateNavigationProgress")
+        let offRouteBranch = try section(in: String(progress), anchor: "if distanceToRoute > offRouteThreshold")
+        XCTAssertTrue(offRouteBranch.contains("currentManeuverCoordinate"),
+                      "The off-route branch must recompute the turn distance from the matched route position.")
+        XCTAssertTrue(offRouteBranch.contains("max(offRouteTurnDistance, 1)"),
+                      "The off-route distance must be floored above 0 so the card never claims 0 ft from far away.")
+    }
+
     private func sourcePath() -> String {
         #if os(Windows)
         return "SmartSpeedCompanion\\ViewModels\\NavigationCoordinator.swift"

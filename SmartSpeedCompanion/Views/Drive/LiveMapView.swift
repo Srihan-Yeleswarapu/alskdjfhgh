@@ -249,7 +249,17 @@ public struct LiveMapView: UIViewRepresentable {
         // alternatives, and neither button serves a purpose while the
         // user is choosing a route.
         let isSearching = viewModel.isSearching || viewModel.isSearchingLocally
-        let chromeCollapsed = isSearching || viewModel.isSelectingRoute
+        // TestFlight 2.4.0 b689 (srihan.yeleswarapu@gmail.com): "Why is this
+        // button so low??" — during guidance the compass + tracking pair was
+        // dropped below the full-width instruction card, stranding the
+        // tracking (location-arrow) button mid-screen. The card owns the
+        // whole top edge, so there is no free corner during guidance, and the
+        // detached-state Re-center chip already owns the re-center affordance:
+        // hide the pair for the entire navigation (Apple Maps behavior) and
+        // restore it when guidance ends.
+        let chromeCollapsed = isSearching
+            || viewModel.isSelectingRoute
+            || viewModel.isNavigating
         if #available(iOS 17.0, *) {
             context.coordinator.compassButton?.compassVisibility = chromeCollapsed ? .hidden : .adaptive
             context.coordinator.trackingButton?.isHidden = chromeCollapsed
