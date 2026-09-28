@@ -1,8 +1,8 @@
 name: Speedio Release (Signed)
 
 on:
-  push:
-    branches: [ version2 ]
+  # Manual-only, same reason as build.yml. Releases to TestFlight happen
+  # when you click "Run workflow" — never on an accidental push.
   workflow_dispatch:
 
 jobs:

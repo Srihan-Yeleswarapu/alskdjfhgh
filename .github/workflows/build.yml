@@ -1,8 +1,10 @@
 name: 📦 SmartSpeed Companion – Signed Build & TestFlight
 
 on:
-  push:
-    branches: [ main, version2 ]
+  # Manual-only. The repository is private and macOS runner minutes are
+  # metered, so this workflow runs exclusively when someone clicks
+  # "Run workflow" in the Actions tab. To re-enable automatic builds, add
+  # a `push: { branches: [...] }` block alongside workflow_dispatch.
   workflow_dispatch:
 
 jobs:
