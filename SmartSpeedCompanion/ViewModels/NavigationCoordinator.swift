@@ -372,9 +372,17 @@ public final class NavigationCoordinator: ObservableObject, @unchecked Sendable 
 
     // MARK: - Internal nav scratch
 
-    /// Wall-clock timestamp of the most recent reroute request, used by the
-    /// 35 m off-route detector in `checkOffRouteStatus(_:)` to throttle.
+    /// Wall-clock timestamp of the most recent reroute ATTEMPT, used by BOTH
+    /// off-route detectors to throttle. Both detectors arm this clock when
+    /// they fire, so a reroute that ends in failure (MapKit error, empty
+    /// response, stale start) cannot be re-attempted every 0.75 s forever —
+    /// each retry waits for the full backoff, and the failed-attempt voice
+    /// cue is spoken at most once per backoff window.
     private var lastRerouteTime: Date = .distantPast
+    /// Minimum spacing between consecutive reroute ATTEMPTS. Kept tight so a
+    /// genuine failure is retried promptly, but wide enough that the
+    /// voice/haptic alert cadence stays humane.
+    private let rerouteAttemptCooldown: TimeInterval = 5.0
     /// Latest location that proved the vehicle is off the active route. It is
     /// used as the reroute origin; MKMapItem.forCurrentLocation() can lag the
     /// GPS callback by several seconds on CarPlay.
@@ -1112,7 +1120,16 @@ public final class NavigationCoordinator: ObservableObject, @unchecked Sendable 
     /// VM stores them on `@Published var availableRoutes`).
     /// The `isSelectingRoute` flag (also host-VM state) is NOT touched
     /// here — that's a UI-state concern for the wrapper method.
-    public func selectDestinationAndCalculateRoutes(to destination: MKMapItem, isRerouting: Bool = false) async {
+    ///
+    /// - Returns: `true` when THIS request completed and published its
+    ///   routes (i.e. it was not superseded by a newer request). Callers
+    ///   that chain a navigation start off a reroute MUST branch on this
+    ///   return value, not on `isRerouting`: the latch is cleared on
+    ///   every completing path, so it reads `false` precisely when the
+    ///   calculation succeeded — branching on it starts navigation
+    ///   never, and the off-route detectors re-fire forever.
+    @discardableResult
+    public func selectDestinationAndCalculateRoutes(to destination: MKMapItem, isRerouting: Bool = false) async -> Bool {
         routeRequestGeneration &+= 1
         let requestGeneration = routeRequestGeneration
         // A fresh user-selected destination supersedes any prior off-route
@@ -1138,13 +1155,15 @@ public final class NavigationCoordinator: ObservableObject, @unchecked Sendable 
             request.highwayPreference = .avoid
         }
 
+        var publishedRoutes = false
         do {
             let directions = MKDirections(request: request)
             DebugLogger.shared.log("Calculating routes to: \(destination.name ?? "Unknown")")
             let response = try await directions.calculate()
             guard requestGeneration == routeRequestGeneration,
-                  mapItemsMatch(destination, self.destination) else { return }
+                  mapItemsMatch(destination, self.destination) else { return false }
             self.availableRoutesSetter(response.routes)
+            publishedRoutes = !response.routes.isEmpty
             DebugLogger.shared.log("Found \(response.routes.count) available routes\(isRerouting ? " (Fast Reroute)" : "")")
         } catch {
             DebugLogger.shared.log("Route calculation FAILED: \(error.localizedDescription)")
@@ -1154,6 +1173,7 @@ public final class NavigationCoordinator: ObservableObject, @unchecked Sendable 
         if requestGeneration == routeRequestGeneration {
             self.isRerouting = false
         }
+        return publishedRoutes
     }
 
     // MARK: - Navigation Control
@@ -1509,11 +1529,22 @@ public final class NavigationCoordinator: ObservableObject, @unchecked Sendable 
             if !isMoving {
                 return
             }
-            if !self.isRerouting {
+            // Serialize both detectors through one attempt clock: if the fine
+            // detector has already fired inside the cooldown (or a failed
+            // attempt is backing off), stay silent — announcing and firing
+            // again here is what produced the looping "off route,
+            // recalculating" audio.
+            guard Date().timeIntervalSince(lastRerouteTime) >= rerouteAttemptCooldown else { return }
+            if !self.isRerouting && !isCalculatingReroute {
                 self.isRerouting = true
+                lastRerouteTime = Date()
                 DebugLogger.shared.log("OFF ROUTE: \(Int(distanceToRoute))m. Rerouting...")
                 // Haptic: sharp warning buzz to alert the driver they've left the route
                 HapticAlertManager.playNavigationNope()
+                // The coarse detector never seeded the reroute origin, so its
+                // request calculated from (0,0) whenever it raced ahead of the
+                // fine-grained detector. Seed it with this fix.
+                latestRerouteLocation = location
                 announce("Off route. recalculating.")
                 if let dest = self.destination {
                     Task { @MainActor in
@@ -1689,7 +1720,11 @@ public final class NavigationCoordinator: ObservableObject, @unchecked Sendable 
         if distance > offRouteThreshold {
             let timeSinceLastReroute = Date().timeIntervalSince(lastRerouteTime)
 
-            if timeSinceLastReroute >= 0.75 {
+            // One attempt clock for BOTH detectors: the cooldown covers the
+            // in-flight calculation AND backs off after a failed attempt, so
+            // a persistently failing reroute cannot re-fire (and re-announce)
+            // on every GPS tick.
+            if timeSinceLastReroute >= rerouteAttemptCooldown {
                 DebugLogger.shared.log("OFF ROUTE: \(Int(distance))m away. Rerouting.")
                 // Haptic: warning buzz for the fine-grained off-route detector
                 HapticAlertManager.playWarningBuzz()
@@ -1700,11 +1735,24 @@ public final class NavigationCoordinator: ObservableObject, @unchecked Sendable 
                 isCalculatingReroute = true
 
                 Task { @MainActor in
+                    let routeBeforeAttempt = self.currentRoute
                     if let dest = self.destinationItem {
                         await self.onRerouteRequest(dest)
                     }
                     guard generation == self.rerouteRequestGeneration else { return }
                     self.isCalculatingReroute = false
+                    // Failure backoff: when the attempt finished WITHOUT a
+                    // replacement route (MapKit error, empty response, stale
+                    // start) and the vehicle is still off the old route, say
+                    // so ONCE per attempt. A failing reroute used to re-enter
+                    // this detector every 0.75 s and loop "off route,
+                    // recalculating" forever.
+                    if let active = self.currentRoute,
+                       active === routeBeforeAttempt,
+                       let fix = self.lastNavigationLocation,
+                       self.distanceToPolyline(fix, polyline: active.polyline) > self.offRouteThreshold {
+                        self.announce("Still off route.")
+                    }
                 }
             }
         }

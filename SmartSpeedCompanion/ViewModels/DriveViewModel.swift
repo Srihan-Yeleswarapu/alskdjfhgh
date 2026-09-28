@@ -862,13 +862,15 @@ public final class DriveViewModel: NSObject, ObservableObject {
             availableRoutesSetter: { [weak self] routes in self?.availableRoutes = routes },
             onRerouteRequest: { [weak self] dest in
                 guard let self else { return }
-                await self.selectDestinationAndCalculateRoutes(to: dest, isRerouting: true)
-                guard self.navigationCoordinator.isRerouting else { return }
-                if let first = self.availableRoutes.first {
-                    await self.startNavigation(with: first, isReroute: true)
-                } else {
-                    self.navigationCoordinator.isRerouting = false
-                }
+                // Branch on whether THIS request published routes — never on
+                // `isRerouting`. The calculation clears that latch on every
+                // completing path, so it reads `false` precisely when the
+                // reroute SUCCEEDED; branching on it skipped the navigation
+                // start, left the driver on the stale route, and made the
+                // off-route detectors re-fire and re-announce forever.
+                let published = await self.selectDestinationAndCalculateRoutes(to: dest, isRerouting: true)
+                guard published, let first = self.availableRoutes.first else { return }
+                await self.startNavigation(with: first, isReroute: true)
             },
             startSession: { [weak self] in self?.startSession() },
             setNavigating: { [weak self] isNavigating in
@@ -1524,7 +1526,13 @@ public final class DriveViewModel: NSObject, ObservableObject {
     // MARK: - Route Calculation
     
     /// Requests route options from MapKit and triggers the selection view.
-    public func selectDestinationAndCalculateRoutes(to destination: MKMapItem, isRerouting: Bool = false) async {
+    /// - Returns: whether THIS request completed and published routes
+    ///   (forwards the coordinator's result). Reroute callers must branch
+    ///   on this return value — the `isRerouting` latch is cleared on every
+    ///   completing path, so it reads `false` exactly when the reroute
+    ///   succeeded and can never gate the navigation start.
+    @discardableResult
+    public func selectDestinationAndCalculateRoutes(to destination: MKMapItem, isRerouting: Bool = false) async -> Bool {
         saveRecentSearch(destination.name ?? "Unknown Location")
         if !isRerouting {
             // Do not let routes from the previous search make a new request
@@ -1532,9 +1540,9 @@ public final class DriveViewModel: NSObject, ObservableObject {
             self.availableRoutes = []
             self.isSelectingRoute = false
         }
-        await navigationCoordinator.selectDestinationAndCalculateRoutes(to: destination, isRerouting: isRerouting)
-        guard !isRerouting,
-              !self.availableRoutes.isEmpty,
+        let published = await navigationCoordinator.selectDestinationAndCalculateRoutes(to: destination, isRerouting: isRerouting)
+        guard !isRerouting else { return published }
+        guard !self.availableRoutes.isEmpty,
               let currentDestination = self.destination,
               CLLocation(
                   latitude: currentDestination.placemark.coordinate.latitude,
@@ -1547,9 +1555,10 @@ public final class DriveViewModel: NSObject, ObservableObject {
             // MapKit was calculating, or MapKit may have returned no routes.
             // Never resurrect an empty/stale route picker.
             self.isSelectingRoute = false
-            return
+            return published
         }
         self.isSelectingRoute = true
+        return published
     }
     
     // MARK: - Navigation Control
