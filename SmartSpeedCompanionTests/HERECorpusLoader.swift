@@ -164,7 +164,11 @@ enum HERECorpus {
     /// and an interstate (75) — the four road classes every downstream test
     /// reason about. Wire values are the exact conversions the parsers
     /// must handle: 20.1168 m/s = 45 mph, 29.0576 m/s = 65 mph.
-    static let seedRecords: [HereCorpusRecord] = [
+    /// `nonisolated(unsafe)`: an immutable `let` of a value type that is
+    /// never mutated after init; the annotation only silences the Swift 6
+    /// shared-mutable-state check that `AnyJSON`'s missing `Sendable`
+    /// conformance otherwise triggers (blocking the whole test target).
+    nonisolated(unsafe) static let seedRecords: [HereCorpusRecord] = [
         HereCorpusRecord(
             id: "corpus-arterial-45",
             latitude: 33.30620, longitude: -111.84120, heading: 90,

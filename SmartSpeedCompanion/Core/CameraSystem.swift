@@ -1092,35 +1092,43 @@ public final class CameraAnimator {
         stabilizer.reset()
     }
 
-    /// Restore the camera after MapKit resumes user tracking following a
-    /// manual pan/pinch (v1-compatible signature and behaviour, now backed by
-    /// the stable engine output).
+    /// Restore the camera after the user taps Re-center (or the map reattaches
+    /// after a manual pan/pinch).
+    ///
+    /// Semantics (FB: "Re-center must not zoom"): re-centering means PUT MY
+    /// LOCATION IN THE CENTER — it is explicitly NOT a zoom change. The user's
+    /// current altitude IS the desired altitude: we recenter at the current
+    /// zoom and the animator's own subsequent speed-based glide then evolves
+    /// the altitude organically from wherever the user was. The previous
+    /// behavior computed the speed-based target here and snapped to it,
+    /// which made every re-center feel like an unrequested zoom-out/in.
+    ///
+    /// The old version also hopped tracking `.follow → .none → .follow`
+    /// around the write. Each flip re-derives MapKit's tracking camera and
+    /// can displace the center we just set — the tracking write races ours.
+    /// With `.follow` already active (both drive states use it), a direct
+    /// `camera.centerCoordinate` assignment is unnecessary anyway: MapKit's
+    /// tracking controller recenters on the user itself. We only write the
+    /// camera directly when tracking is OFF (detached map, no route), and
+    /// we never touch the tracking mode.
     public func restoreCamera(
         on mapView: MKMapView,
         context: CameraContext,
         centerCoordinate: CLLocationCoordinate2D? = nil
     ) {
-        let target = CameraDecisionEngine.computeTarget(from: context)
-        let trackingMode = mapView.userTrackingMode
-        let restoreTracking = trackingMode != .none
-
-        if restoreTracking {
-            mapView.setUserTrackingMode(.none, animated: false)
+        // Re-center at the user's CURRENT zoom: the center moves (when we own
+        // it), the altitude/pitch stay exactly as the user left them.
+        if let centerCoordinate,
+           mapView.userTrackingMode == .none {
+            let cam = mapView.camera.copy() as! MKMapCamera
+            cam.centerCoordinate = centerCoordinate
+            mapView.camera = cam
         }
 
-        applyTargetCamera(on: mapView, target: target, centerCoordinate: centerCoordinate)
-
-        if restoreTracking {
-            mapView.setUserTrackingMode(trackingMode, animated: false)
-            Task { @MainActor [weak self, weak mapView] in
-                guard let self, let mapView,
-                      mapView.userTrackingMode == trackingMode else { return }
-                self.applyTargetCamera(on: mapView, target: target, centerCoordinate: centerCoordinate)
-            }
-        }
-
-        // Continue smoothing FROM the restored camera with a primed stabilizer
-        // so the very next tick doesn't drift or ramp from stale state.
+        // Resume smoothing FROM the camera as it now stands — the user's
+        // current altitude becomes the animator's baseline. Priming the
+        // stabilizer with the driving context lets the normal speed-based
+        // glide take over gradually from here (no snap).
         reset(to: mapView)
         stabilizer.prime(context: context)
     }
@@ -1316,17 +1324,4 @@ public final class CameraAnimator {
         }
     }
 
-    private func applyTargetCamera(
-        on mapView: MKMapView,
-        target: TargetCameraState,
-        centerCoordinate: CLLocationCoordinate2D?
-    ) {
-        let camera = mapView.camera.copy() as! MKMapCamera
-        if let centerCoordinate {
-            camera.centerCoordinate = centerCoordinate
-        }
-        camera.centerCoordinateDistance = target.altitude
-        camera.pitch = CGFloat(target.pitch)
-        mapView.camera = camera
-    }
 }

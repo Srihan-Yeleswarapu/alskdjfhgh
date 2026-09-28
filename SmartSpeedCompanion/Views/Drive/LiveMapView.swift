@@ -710,6 +710,11 @@ public struct LiveMapView: UIViewRepresentable {
                 cameraAnimator.suspend()
                 wasMapDetached = true
                 mapView?.userTrackingMode = .none
+                #if DEBUG || DEVELOPER_BUILD
+                // Mock mode: flag the camera for a user-location re-seed on
+                // the first attached tick after re-centering.
+                simNeedsRecenterOnReattach = true
+                #endif
                 DebugLogger.shared.log("MAP DETACHED: Manual Control")
             }
 
@@ -736,6 +741,13 @@ public struct LiveMapView: UIViewRepresentable {
         nonisolated(unsafe) private var simFrameProxy: SimFrameProxy?
         private weak var simMapView: MKMapView?
         private weak var simViewModel: DriveViewModel?
+        /// Set when the map detaches (manual gesture). On the first attached
+        /// tick afterwards, the camera re-seeds onto the user's location —
+        /// Re-center means "my location in the center", not a glide from the
+        /// panned position. (The link itself keeps running across a detach;
+        /// only its centering writes are gated, hence a flag rather than an
+        /// idle-link check.)
+        private var simNeedsRecenterOnReattach: Bool = false
         private var simCarTarget = CLLocationCoordinate2D(latitude: 0, longitude: 0)
         private var simCarCurrent = CLLocationCoordinate2D(latitude: 0, longitude: 0)
         private var simCenterCurrent = CLLocationCoordinate2D(latitude: 0, longitude: 0)
@@ -769,8 +781,20 @@ public struct LiveMapView: UIViewRepresentable {
             simMapView = mapView
             simViewModel = viewModel
             simCarTarget = mockLocation.coordinate
-            if linkWasIdle {
+            // After a detach (manual pan or a Re-center request), re-seed the
+            // smoothed camera center on the USER's location — re-centering
+            // means "put my location in the center", not "glide from wherever
+            // the pan left the camera". The car keeps its own smoothing so it
+            // still glides to its mock fix; only the camera snaps to the user.
+            let reattachingAfterDetach = simNeedsRecenterOnReattach && !viewModel.isMapDetached
+            if reattachingAfterDetach {
+                simCenterCurrent = mockLocation.coordinate
+                mapView.setCenter(mockLocation.coordinate, animated: false)
+                simNeedsRecenterOnReattach = false
+            } else if linkWasIdle {
                 simCenterCurrent = mapView.centerCoordinate
+            }
+            if linkWasIdle {
                 simLastFrameTimestamp = 0
                 ensureSimDisplayLink()
             }

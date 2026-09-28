@@ -305,22 +305,38 @@ extension XCTestCase {
 /// Resolution: anchor at #filePath (always correct on this machine), then
 /// walk upward until the expected "<subPath>" exists. Works no matter how
 /// deep the checkout sits and mirrors SpeedLimitSignTests' proven approach.
+/// Locked mutable box (Swift 6 Sendable-safe) for RepoSource's read cache.
+private final class LockedSourceCache: @unchecked Sendable {
+    private var storage: [String: String] = [:]
+    func get(_ key: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage[key]
+    }
+    func set(_ key: String, _ value: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage[key] = value
+    }
+    private let lock = NSLock()
+}
+
 enum RepoSource {
     /// Successes only — on failure we throw a FRESH XCTSkip each call so the
     /// XCTest runner sees a genuine skip for every test that needs one.
-    private static var cache: [String: String] = [:]
-    private static let lock = NSLock()
+    /// Swift 6 concurrency: the dictionary is only ever touched under its
+    /// internal lock, but the compiler still flags a bare `static var`; boxing
+    /// it in a locked `final class` satisfies both the mutable-cache
+    /// semantics and the Sendable checker.
+    private static let cache = LockedSourceCache()
 
     static func read(_ subPath: String,
                      file: StaticString = #filePath,
                      line: UInt = #line) throws -> String {
         let key = "\(file)\u{1F}\(subPath)"
-        lock.lock()
-        if let cached = cache[key] {
-            lock.unlock()
+        if let cached = cache.get(key) {
             return cached
         }
-        lock.unlock()
 
         let text: String
         do {
@@ -330,9 +346,7 @@ enum RepoSource {
                 "Repo source not readable from the test sandbox: \((error as NSError).localizedDescription)"
             )
         }
-        lock.lock()
-        cache[key] = text
-        lock.unlock()
+        cache.set(key, text)
         return text
     }
 
